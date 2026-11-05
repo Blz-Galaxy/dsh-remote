@@ -1,0 +1,64 @@
+name: Pack dsh-remote for ARM64 and Release
+
+on:
+  workflow_dispatch:        # 手动触发
+    inputs:
+      tag:
+        description: 'Release tag（留空则自动生成）'
+        required: false
+  push:
+    tags:
+      - 'v*'                # 打 v 开头的 tag 时自动触发
+
+permissions:
+  contents: write           # 关键：允许创建 Release 和上传资产
+
+jobs:
+  pack:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Pack tarball
+        run: |
+          mkdir -p dist
+          npm pack --pack-destination ./dist
+          ls -lh dist/
+
+      - name: Upload artifact (备份，可选)
+        uses: actions/upload-artifact@v6
+        with:
+          name: dsh-remote-arm64-tgz
+          path: ./dist/*.tgz
+          if-no-files-found: error
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "name=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            echo "name=build-${{ github.run_number }}-$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release and upload tgz
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          body: |
+            离线安装包（linux-arm64，Node 24）
+            - 构建运行器：ubuntu-24.04-arm
+            - Commit：${{ github.sha }}
+          files: ./dist/*.tgz
+          generate_release_notes: false
+          fail_on_unmatched_files: true
