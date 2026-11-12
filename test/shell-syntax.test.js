@@ -14,6 +14,14 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { buildLaunchCommand, buildStopCommand } from '../lib/web-attach.js'
+import { launcherSource, writeTermSecretHelpers } from '../lib/remote-shell.js'
+import remoteShellChild from '../lib/remote-shell-child.cjs'
+import posixShell from '../lib/posix-shell.cjs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
+const { posixViaSh } = posixShell
 
 /** A `sh` we can ask to syntax-check, or null when the host has none. */
 function findSh() {
@@ -69,6 +77,57 @@ test('buildStopCommand emits POSIX-valid shell', (t) => {
   }
 })
 
+// Issue #111: the login shell may be fish/csh, so the FINAL sh -c wrapper (not
+// only the inner builders) is what must survive a real parser. Quote-hostile
+// paths exercise the nested close/escape/reopen quoting boundary.
+test('issue #111: final sh -c commands are POSIX-valid, including quoted paths', (t) => {
+  if (!sh) return t.skip('no POSIX sh on this host; cannot syntax-check the sh -c boundary')
+  const launch = buildLaunchCommand({
+    command: '/tmp/private prefix/dsh', profile: 'web', logPath: '.log-issue111', dshHome: '/tmp/home',
+  })
+  const commands = [
+    posixViaSh(launch),
+    posixViaSh(buildStopCommand(1234, '.dsh-remote-web-issue111.log')),
+    ...['', '~/my proj', '/srv/my proj', "/srv/it's", '/srv/$dollar/`backtick`/"double"'].map((p) => remoteShellChild.remoteCommand(p)),
+  ]
+  for (const cmd of commands) {
+    assert.match(cmd, /^sh -c '/, 'the generated command must cross through one explicit sh')
+    const err = syntaxError(sh, cmd)
+    assert.equal(err, null, `invalid sh -c command: ${cmd}\n${err}`)
+  }
+})
+
+// The generated `remote ssh` launcher is also a shell script handed to a real
+// terminal; quote-hostile paths must survive `sh -n`, not just regexes.
+test('the POSIX remote-ssh launcher is POSIX-valid shell', (t) => {
+  if (!sh) return t.skip('no POSIX sh on this host; cannot syntax-check the launcher')
+  const cases = [
+    { childPath: '/pkg/child.cjs', machinesFile: '/root/m.json', nodePath: '/usr/bin/node' },
+    { childPath: "/pkg/it's/child.cjs", machinesFile: '/tmp/my machines.json', nodePath: '' },
+    { childPath: '/pkg/child.cjs', machinesFile: '/root/m.json', nodePath: '/opt/my node/bin/node' },
+  ]
+  for (const spec of cases) {
+    const err = syntaxError(sh, launcherSource({ platform: 'linux', ...spec }))
+    assert.equal(err, null, `invalid launcher shell for ${JSON.stringify(spec)}:\n${err}`)
+  }
+})
+
+// The askpass wrapper the credential bridge installs is likewise generated shell.
+test('the POSIX askpass wrapper is POSIX-valid shell', (t) => {
+  if (!sh) return t.skip('no POSIX sh on this host; cannot syntax-check the askpass wrapper')
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dsh-remote-askpass-'))
+  try {
+    for (const nodePath of ['/usr/bin/node', "/opt/it's here/bin/node"]) {
+      writeTermSecretHelpers({ dir, platform: 'linux', nodePath })
+      const wrapper = readFileSync(path.join(dir, 'term-askpass'), 'utf8')
+      const err = syntaxError(sh, wrapper)
+      assert.equal(err, null, `invalid askpass wrapper for nodePath=${nodePath}:\n${err}`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // The gate must be able to fail: prove it rejects the exact defect that shipped.
 test('the syntax gate actually rejects the do; defect it exists for', (t) => {
   if (!sh) return t.skip('no POSIX sh on this host; cannot prove the gate fails')
@@ -76,6 +135,9 @@ test('the syntax gate actually rejects the do; defect it exists for', (t) => {
   assert.notEqual(syntaxError(sh, broken), null, '`do;` must be reported as a syntax error')
   const fixed = 'i=0; while [ $i -lt 3 ]; do sleep 1; i=$((i+1)); done'
   assert.equal(syntaxError(sh, fixed), null, 'the glued form must be accepted')
+  // The new sh -c boundary needs its own negative control too: a gate that only
+  // ever sees valid wrappers cannot prove it notices a broken outer quote.
+  assert.notEqual(syntaxError(sh, "sh -c 'unterminated"), null, 'an unterminated sh -c quote must be rejected')
 })
 
 // A gate that silently skips reports GREEN while an entire class of defect goes

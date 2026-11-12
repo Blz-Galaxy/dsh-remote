@@ -2,6 +2,369 @@
 
 All notable changes to **dsh-remote**.
 
+## 0.8.92 — 2026-11-12
+### 新增：远程项目技能 + 稳定性与远程体验集中修复
+
+- **远程技能目录（#120）**：`.dsh/skills` 与 `.agents/skills` 直接进入 DSH 技能目录，目录 bundle 与顶层 Markdown 均可发现，完整正文按需经 SFTP 加载，无需先同步镜像；同名时远端权威内容优先于本地副本。写入/推送/autoPush 即时失效，后台或外部修改由每 5 分钟一次、只失效不联网的刷新兜底。
+- **远程文件链接（#110）**：远程链接优先进入远程查看器，支持同 tab 换文件、换会话和行号导航，同时保留地址 anchor 优先与范围行号；畸形 URI 不再抛出宿主路由异常。
+- **非 POSIX 登录 shell（#111）**：Remote SSH 与 WebAttach 内部生成的命令统一经安全 `sh -c` 边界执行，fish/csh 等登录 shell 不再被 POSIX 语法绊倒；用户的 `rw_exec` 语义不变。
+- **PTC 工具可见性（#117）**：`localTools` 同时作用于 native、PTC SDK、`run_code` bindings 与 dispatch，覆盖新建/现存 agent、disposed 与热重载。
+- **SSH 传输可靠性（#118/#121/#122）**：所有 OpenSSH 子进程 stdin 的异步 EPIPE 都有监听，不再导致 host 进程退出；native 每个 live client/epoch 复用一条 SFTP channel，避免 MaxSessions 打满后连坐断开其它通道；OpenSSH 与 native 的 known_hosts 存储分离。
+- **跨入口侧栏偏好（#119）**：自动打开远程文件面板的开关持久化到 `$DSH_HOME`，tether/不同 origin 共享；首次打开前等待偏好，存储不可用时不再 fail-open。
+- **服务器辨识度（#109）**：机器与会话标记使用按 endpoint 持久化的徽章颜色，首 8 个 endpoint 不撞色。
+- **依赖与测试基架**：更新 schemastery、Cordis、React、dsh-llm、dsh-session；集中适配 React 18/19 dispatcher，fake-SSH host key 先验证再使用，消除偶发 malformed key CI 失败。
+
+验证：1201 项测试 1193 pass / 0 fail / 8 skip，整体覆盖率 83.8%；真实 SkillRegistry 与 fake sshd 双后端（native / system-OpenSSH）验证远程技能，main CI 四 job 全绿。
+
+## 0.8.91 — 2026-11-10
+### 修复：远程文件链接被同装扩展抢走（本地镜像 ENOENT）+ 行号跳转接通 0.2.x 通道（issue #108）
+
+@Arkos123 的深挖三连全部坐实并修复：
+
+1. **认领仲裁**：注册表同档同 glob 时按注册先后决胜，dsh-better-sidebar 排前时把远程
+   会话的文件链接抢去按本地镜像读 → ENOENT。我们把 glob 从 `dsh-resource://file/**`
+   收窄为 `dsh-resource://file/session/**`——最长命中者优先，从此与装载顺序无关
+   （语义上也恰好就是我们唯一能处理的 session 作用域）。
+2. **行号通道**：0.2.x 的行号走 `openResource(url, {params:{line}})`，地址里根本没有
+   `#L`——之前只读地址的我们等于从没收到过。现在两条通道都读（地址锚点 + params）。
+3. **范围锚点**：`#L24-L30` / `:24-30`（核心提示词教模型这么写）以前被我们静默忽略
+   （链接打得开但停在顶部，最难察觉的一种错）。现在范围取起始行，与核心解析器一致。
+
+新增 3 例钉（glob 收窄注册面/params 通道驱动跳行/两种范围写法落首行）；#55 与
+client-lifecycle 的旧 glob 钉桩按新契约改钉。全套 1134 例、check.mjs、覆盖率门全绿。
+
+## 0.8.90 — 2026-11-10
+### 架构债清偿：lib/index.js 按域拆完（issue #82）
+
+252KB 的 god-file 拆完了。六个路由域各自成册，handler 原体搬移并附逐字符相等证明：
+
+| 新文件 | 域 | 行覆盖 |
+|---|---|---|
+| `lib/routes-audit.js` | 审计日志 | 93.8% |
+| `lib/routes-forwards.js` | 端口转发 | 96.2% |
+| `lib/routes-web-attach.js` | 远程 DSH 界面 | 100% |
+| `lib/routes-misc.js` | 遥测 / 终端凭据桥 / 工作区清理 | 88.0% |
+| `lib/routes-machines.js` | 机器注册表 + ssh-config | 95.4% |
+| `lib/routes-workspace.js` | 连接 / 镜像 / 目录选择辅助 | 77.1% |
+
+（连同此前的 routes-fs / routes-term / routes-update 三个先例，九个工厂在 index.js
+里各占一行。）index.js 从 5065 降到 4241 行：剩下的只有工具定义、apply 装配、
+启动恢复与各域共享闭包。逐文件覆盖率下限全部 ≥60%，加权 83.1%；index.js 自己
+从 59.7%（issue 立案时）爬到 78.9%——当年为它特批的 59% 例外早已不存在。
+零行为变化：routes-matrix 清单一字未动且全绿。
+
+## 0.8.89 — 2026-11-10
+### 修复潜伏哑弹：GET /dsh-remote/telemetry 必抛 ReferenceError
+
+#82 拆分工程中抓到：0.8.78 引入的遥测路由 GET 处理器调用了 `heartbeatEnabled()`，
+但这个名字从没被 import——每次 GET 都抛 ReferenceError，宿主把被拒的处理器变成
+一个空 400。整套测试之所以一路绿灯：矩阵只探它的 405 和畸形 POST 分支，从没真正
+GET 过。补上 import，并新增一例真正 GET 它的路由测试（这类「名字解析失败藏在
+没人走的路径上」的哑弹今后由它守着）。
+
+## 0.8.88 — 2026-11-10
+### 目录选择弹窗吃上宿主焦点层（issue #97）
+
+DirPicker 现在采用宿主共享模块里的 `useModalLayer`（bundle 实证存在）：焦点圈禁
+（Tab 不出弹窗）、打开自动聚焦路径框、关闭后焦点还原、**IME 输入法合成保护**
+（中文输入组字时按 Esc 不再误关弹窗）。两条刻意的保留：①遮罩仍是我们自己的
+按压原点守卫（宿主 Modal 的遮罩裸 onClick 关闭，会让 #52 的「内起外落手势误关」
+回归）；②mkdir 小弹窗开着时 Esc 只关它不关大弹窗（宿主层栈自上而下派发，
+加上我们自己的 mkdirPrompt 守卫双保险）。宿主没有该导出时（老版本/测试桩）退回
+原 document 监听，逐字节不变。新增 5 例行为测试（层接线/Esc 层叠/mkdir 守卫/
+自动聚焦标记/无层回退）。
+
+## 0.8.87 — 2026-11-10
+### Web/Desktop 也有了工作区清理页（issue #96）
+
+TUI 在 PR #92 就有了「机器菜单 → m 工作区管理」的三档清理，Web/Desktop 一直没有
+入口。现在设置页新增**「工作区清理」**折叠区块（审计日志旁边）：
+
+- 列出每台机器的全部本地镜像：标题、远端路径、镜像大小、对话数、是否在用；
+- 三档与 TUI 同语义：**删对话**（保留镜像与登记）/ **移出最近**（止住自动重建）/
+  **彻底删除**（对话+登记+最近记录+镜像全清，远端目录不动）；
+- 彻底删除走主题化确认对话框；有会话占用时被拒并说明（WORKSPACE_BUSY → 409）；
+- 复用进程内宿主 API（与 TUI 同一实现），新路由 `GET /dsh-remote/workspace-mirrors` +
+  `POST /dsh-remote/workspace-cleanup`。
+
+验证：路由级 e2e（真实种子镜像+会话目录：列出→两档删除→消失；非镜像路径 400 拒绝；
+错 mode 400；GET 405）+ 设置页行为测试（折叠不加载/展开列出/确认才删/取消不写/
+轻档直接执行）。全套 1112 例、check.mjs、覆盖率门全绿。
+
+## 0.8.86 — 2026-11-10
+### 远程文件预览：行号 + 语法高亮 + 链接跳行（issue #104）
+
+远程文件查看器从「裸文本墙」升级为正经的代码预览：
+
+- **行号**：每个文本文件都带行号槽（右对齐、不可选中、等宽随字数伸缩）；
+- **语法高亮**：走宿主共享模块里的 Shiki 引擎（`useCodeHighlighter` + `languageForPath`，
+  bundle 实证契约：按行返回 `{text, style:{color}}` token 组）；宿主没有该引擎或
+  不认得这个扩展名时，退化为带行号的纯文本，功能不残缺；
+- **链接跳行**：AI 回答里的 `文件:行号` 或 `…#L行号` 链接点开时，先剥离锚点再解析
+  （不会去查名叫 `main.c:42` 的文件），打开后目标行滚动到视口中央并闪烁一次；
+- 编辑模式保持纯 textarea 不变；.md 仍走宿主 Markdown 渲染（互不干扰）。
+
+验证：`test/remote-code-view.test.js` 6 例——无高亮器时行号照常、认得语法时 token 上色、
+陌生扩展名不缺行号、`#L2` 与 `:42` 两种锚点都落到目标行且只有该行闪烁、无锚点时无闪烁；
+驱动的是真实注册的页签体（render harness 的 primitives 桩新增了可选的高亮器面）。
+全套 1107 例、check.mjs、覆盖率门全绿。
+
+## 0.8.85 — 2026-11-10
+### 修复：含代码块的远程 .md 打开是一片空白（PR #107，@hjwsm1989）
+
+宿主的 `MarkdownText` 渲染围栏代码块/脚注时会**无守卫地**解引用 `labels.code.*`
+与 `labels.footnotes`，而我们的查看器从没传过 `labels`——于是含 ``` 代码块的
+.md 在宿主渲染器里抛 TypeError，被面板错误边界吞掉，打开就是空白页（无代码块的
+.md 正常，所以看起来像"特定文件坏了"）。现在按宿主契约补齐本地化 labels，并给
+宿主渲染器包一层错误边界：将来宿主再多要一个 label，降级成源码文本而不是空白。
+测试桩升级为「严格模式」（与真实宿主做同样的解引用），此类断裂今后红灯伺候。
+
+## 0.8.84 — 2026-11-10
+### 心跳统计后端迁至 Cloudflare Workers + D1（CloudBase 三次停服的根治）
+
+CloudBase 体验版的「套餐资源点」一周内两次把我们烧到 `InsufficientBalance` 停服
+（最近一次 11-04 起，看板 DAU 断流一周）。新后端是自己的 Cloudflare Worker + D1
+（免费层 10 万请求/天、D1 10 万写 500 万读/天——我们只用约 1%）。
+
+- 端点：`https://dsh-remote-heartbeat.flymysql.workers.dev/dsh-hb/*`，路由路径与
+  CloudBase 时代一致（/heartbeat /stats /health），客户端只换域名；
+- 存储 `(day, idHash)` 主键去重（INSERT OR IGNORE），客户端重试不虚增；
+- 统计读接口的输出形状与看板既有消费完全一致（日柱缺口补零、WAU/MAU/累计装机、
+  版本/平台分布各取前 12）；
+- 服务端强制隐私不变量：字段白名单 + idHash 必须是 32 位小写 hex 伪名
+  （原始 UUID 直接 400），不存 IP/UA/时刻；
+- 后端源码与部署手册入库 `infra/heartbeat/`（wrangler.toml / schema.sql / 8 例
+  单测 / CI 新增 test-infra 腿）。
+
+## 0.8.83 — 2026-11-09
+### 修复：远程 .md 恢复渲染成排版文档（PR #102，@hjwsm1989；issue #101）
+
+宿主把 `MarkdownText` 导出为 `React.memo` 包装（`typeof === 'object'`），而 #74
+引入的守卫只认函数，于是每个远程 .md 都退化成一堵源码墙（字面 `#`、`**`、
+反引号）。现在按「组件类型」检测宿主 primitive（函数，或带 symbol `$$typeof`
+的对象均可），测试桩一并改成与宿主一致的 memo 形状并钉住 `$$typeof` 断言——
+这类退化从此有了真正的看守。
+
+### 修复：无凭据机器改走本机 ssh 拨号（PR #100，@davidlin2k；issue #99）
+
+`~/.ssh/config` 里只写 HostName/User 的别名靠 OpenSSH 自己的默认私钥发现
+（id_rsa/id_ed25519/agent/UseKeychain）认证，ssh2 后端一概不懂，连接与
+「测试连接」一律误报「缺少凭据」。现在按机器实际持有的凭据选后端：密码 /
+私钥 / agent / OTP / 钥匙串仍在 native，无凭据机器交给系统 `ssh`——行为与
+`ssh <alias>` 完全一致；`from-ssh-config` 领养的修复前记录会在下次领养点击时
+原地升级，「缺少凭据」提示也为这类机器指认了 openssh 选项。
+
+### 修复：rw_sync 抗 SFTP 中途超时 + 镜像路径直投 rw_*（PR #105，@shis23）
+
+- 同步改为「先文件后子目录」：深层子树撞上 maxFiles/超时时，根目录浅层文件
+  不再被饿死；本地目录只在远端 readdir 成功后创建（dryRun 不建），通道死亡
+  不再留下一片空壳目录还谎报 `Downloaded N file(s)`。
+- SFTP 通道超时/关闭后透明换用新面（上限 2 次），仍失败则如实中止并在摘要
+  里给出 `ABORTED early`，重跑即为增量续传。
+- 远程会话里把 harness 运行上下文报告的本地镜像 cwd
+  （`~/.dsh/remote-workspaces/...`）传给 rw_* 工具时，现在映射回远程工作区，
+  不再发往 SFTP 变成 `/C:/...`；远程工作区的系统提示也点明了镜像目录的身份
+  与 `rw_download` 的存在。
+
+### TUI：删除失灵的「设为工作区」入口，新增 `o` 打开镜像根目录（PR #103，@baiseraku）
+
+动作菜单里那个只会复用已记录路径、点了没反应的「设为工作区」已移除，建工作区
+统一走 `b` 浏览远程目录 → `w`（菜单恰剩 6 项）。主列表新增 `o`：用系统文件
+管理器打开 `$DSH_HOME/remote-workspaces`（macOS `open` / Windows `explorer` /
+其他 `xdg-open`；目录不存在则报错且不创建，spawn 失败进页脚而不谎报成功，
+旧宿主缺少对应方法时静默降级）。
+
+验证：四个 PR 各自全套件绿，合流后 main 全量 1088 例 / 0 失败、check.mjs 干净。
+
+## 0.8.82 — 2026-11-09
+### 原生右栏也学会了「进远程会话自动展开远程文件」（#78 的原生平权）
+
+此前自动展开只活在装了 better-sidebar 的世界里；用宿主自带右栏的用户进到远程
+会话，看到的还是内置「文件」面板里的**本地镜像目录**（常常没同步、空空如也），
+远程目录树要从引导卡里手动点才出现——观感上就是「侧边栏显示的不对」。
+
+现在：会话头 chip 的挂载时机即「这个会话正在被看」，远程会话一上屏就自动打开
+原生右栏的远程文件页签（`openTab` 会顺带展开栏体）。规则与 better-sidebar 世界完全
+对齐：同一会话只自动一次（你手动关掉就不再烦你）、#78 的设置开关对两个世界一体
+生效、better-sidebar 在场时它独占呈现绝不双开、打开失败不记账（下次上屏重试）。
+新增 4 例行为测试（自动一次/本地不弹/开关关闭/失败重试）。
+
+顺带说明（一直以来的设计，不是 bug）：内置「文件」面板永远跟随会话 cwd=本地镜像，
+因为编辑与工具都以镜像为工作副本；要看远端实时内容请用「远程文件」页签。
+
+## 0.8.81 — 2026-11-09
+### 「remote ssh」终端不再索要已保存的密码（凭据桥）+ 遥测开关移出设置页
+
+**凭据桥**：远程终端此前直接调系统 `ssh`——它只懂私钥和 agent，插件存的密码
+（明文注册表也好、操作系统钥匙串也好）都递不过去，于是每次开终端都被问一遍
+`root@x's password:`。现在：启动器目录里多了一个 askpass 助手脚本，宿主在 Web
+组合下把一个**每次开机随机重生**的 bearer token 写进 `remote-terminal/term-secret.json`
+（0600）；只对「明确需要密码认证」的机器（无 key/agent/别名/OTP）才给 ssh 挂上
+`SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force`，ssh 的密码提示改由新路由
+`POST /dsh-remote/term-secret` 回答——走的是和真实连接**同一条**凭据链（含钥匙串）。
+安全面：token 计时安全比对、路由仍过回环/同源围栏（自带 bearer 豁免只挡浏览器不挡
+本机进程，跨站网页读不到 0600 文件）、payload 在每次开机先清后写（Desktop 无 HTTP
+监听器 → 桥自动关闭、退回交互询问）、机器身份不匹配一律 404。OTP（keyboard-
+interactive）机器刻意不桥：动态码是一次性的，静态密码替答必错。
+
+**遥测开关下沉**：设置页的「匿名使用统计」复选框已按要求移除——默认就是上报；
+管理员仍可用 profile 配置 `telemetry: false` 关闭；0.8.78 期间存在过的用户关闭
+选择（`$DSH_HOME/.dsh-remote-telemetry`）继续被尊重。
+
+验证：新路由全套行为测试（错误 token 403/未知机器 404/明文密码命中/GET 405），
+子进程 `needsAskpass`/`askpassEnv` 判定矩阵，写盘三件套的跨平台断言，POSIX
+askpass 包装过真实 `sh -n` 闸门。全套 1062 例、check.mjs、覆盖率门全绿。
+
+## 0.8.80 — 2026-11-08
+### 修复：TUI 底栏机器名只在远程工作区会话显示（PR #98，@baiseraku）
+
+此前 dsh-tui 底栏把「保存为 current 的机器」当成「正在用的机器」，本地目录里也常年
+挂着远程机器名，让人误以为当前会话是远程的。现在底栏跟随**当前会话的 cwd**：只有
+cwd 落在 `$DSH_HOME/remote-workspaces/<host>-<user>-<port>/<name>` 镜像里时才显示该机
+（子代理会话不算；宿主没有 sessions 服务时退回旧行为；读失败时宁可隐藏不留过时
+名字）。悬停详情 = 机器名 · `user@host:port` · 远端路径，按终端宽度自适应裁切
+（CJK/emoji 记两格），resize 后重裁。事件订阅、500ms 合并刷新与卸载清理一应俱全；
+相同内容不重复写字段（不给宿主打字机账本添噪）。
+
+## 0.8.79 — 2026-11-08
+### 视觉长尾对齐宿主原件（架构评审 P1）+ god-file 拆分试点（issue #82）
+
+**primitives 长尾（全部软采用、老宿主行为不变）**：
+- 设置页两个复选框 → 宿主 **Switch**（role=switch、纯布尔回调；testid 挪到外层
+  span，测试两臂都找得到）；
+- 目录选择器的「本机/远程」切换 → 宿主 **SegmentedTabs**（自带滑动指示与方向键
+  导航）；
+- 文件树/目录列表的手绘 SVG 图标 → 宿主 **FileTypeIcon**（目录 kind:'folder'、文件按
+  扩展名出图标、未知落 other；本机目录弹窗的 📁 emoji 一并换成同款文件夹图标）。
+
+**issue #82 拆分试点**：自更新域 4 条路由原体迁出为 `lib/routes-update.js`
+（机制留在 update.js，entry 只留一行工厂调用）；新文件落地 82.5% 行/100% 函数覆盖，
+index.js 减百行。后续按域推进（机器注册表/镜像同步/转发/审计/…）。
+
+**上行沟通**：四份立场文档已作为 Discussion 发到 deepseek-ai/deepseek-harness
+（Ideas #12613 路由浏览器围栏 / #12614 插件 upgrade 通道扶正 / #12615 Loader Entry
+公开 dispose / #12616 allowBuilds 双写腐坏），文稿存档于 docs/upstream/。
+
+测试 1047 例全绿（新增 Switch 采用臂挂载测试 + 三条接线 pin），check.mjs 与覆盖率门通过。
+
+## 0.8.78 — 2026-11-08
+### 匿名心跳有了开关（管理员配置 + 设置页复选框）
+
+遥测（每日至多一次的安装心跳，用于日活统计）此前默认开启且无开关。现在两层都可关：
+profile 配置 `telemetry: false`（管理员路径），或设置页新增复选框（用户路径，选择持久化在
+`$DSH_HOME/.dsh-remote-telemetry`——插件升级覆写安装目录也不会丢）。用户覆盖优先于配置默认。
+上报内容不变：插件专属 HMAC 伪名 + 版本号，任何机器信息与原始安装 id 都不离开本机。
+新增路由 `GET/POST /dsh-remote/telemetry`；遥测单元测试补到 14 例（开关优先级/损坏文件回退）。
+
+## 0.8.77 — 2026-11-08
+### 浮层与原生件对齐宿主 primitives（架构评审 P0）
+
+宿主共享模块里的 `@deepseek-ai/dsh-client-ui-primitives` 有约 290 个导出，插件此前
+只用了 1 个（MarkdownText），其余全部手搓——#52（手势误关）、#93（指针穿透）都是
+这一类的病。本次开始系统性采用（一律软探测 + 优雅回退，老宿主行为不变）：
+
+- **`window.confirm` 全部退役**：更新确认、删除机器、删除远程文件三处改用统一的
+  `ConfirmDialog`——宿主有 Modal 就走 Modal（恒 portal + 焦点圈禁 + 自动聚焦 +
+  焦点还原 + IME 保护），没有就用我们自己的按压守卫浮层。嵌入方屏蔽原生对话框的
+  环境下确认框不再凭空消失。
+- **mkdir/重命名输入框（PromptDialog）改用宿主 Modal**；回退路径维持原实现。
+- **远程文件树的右键菜单改用宿主 `Menu`**（锚定指针、portal 到 body、键盘可达）；
+  无 Menu 的宿主保留原命令式 DOM 菜单。
+- **复制到剪贴板优先走宿主 `writeClipboard`**。
+- 目录选择大弹窗（DirPicker）**刻意不迁 Modal**：实测宿主 Modal 的遮罩是裸 onClick
+  关闭，直接套用会让 #52 的「内起外落手势误关」回归（选择器有自动补全列表，手势
+  中途重排是常态）。它维持 #93 的 portal + 自研按压守卫，功能上等价且更安全。
+
+验证：新增 `test/primitives-adoption.test.js` 6 例——删除机器全流程在有/无 Modal
+两种宿主下各跑一遍（含「取消不产生任何写」「native confirm 被调用即炸」的反向钉）
++ 菜单/剪贴板接线形状钉。全套 1041 例、check.mjs、覆盖率门全绿。
+
+## 0.8.76 — 2026-11-08
+### 修复：rw_exec 转后台的任务 20 秒后被杀（issue #95）
+
+**根因（@Jaye1465 报告并定位）**：「超时转后台」设计上不给传输层期限
+（任务的寿命归 job 管），但 `startExecJob` 只是**省略**了 `timeoutMs`，而两个
+传输后端都把「缺省」解释成「用配置默认 `commandTimeoutMs`（20s）」——于是每个
+转后台的任务在 20 秒整被 SIGTERM，kill 文案还把没设置的期限插值成
+`timed out after undefinedms`。
+
+**修复**：期限语义显式化——`timeoutMs: 0` = **无期限**（仅 job 路径使用），
+缺省仍强制执行配置默认。`pool.js`（含 Git Bash 包装路径）与 `openssh.js` 三处
+默认值回退全部保留显式 0；定时器只在期限 >0 时才武装（传 0 给 setTimeout 会
+**立即**超时）。无期限任务的调用方取消（abort）依然致命（SIGTERM 照达远端）。
+kill 文案改为打印实际生效期限；无期限任务万一仍收到 TIMEOUT 会说人话而不是
+`undefinedms`。
+
+验证：新增 `test/issue95-exec-no-deadline.test.js` 三例（0=穿越配置默认存活 /
+缺省仍按时杀死（对照）/ 无期限下 abort 依然 SIGTERM），红绿核对过（旧代码跑挂
+生存例）；issue #70 既有晋升测试的钉桩从 `undefined` 改为显式 `0`。全套 1035 例、
+check.mjs、覆盖率门全绿。
+
+## 0.8.75 — 2026-11-08
+### 远程会话里点「打开终端」直接落到远端工作目录（issue #55 的终端一半）
+
+shell 菜单里的 **remote ssh** 启动器本来就是按 cwd 智能路由的（会话落在远程镜像
+里 → `ssh` 进远端工作目录；否则回落本地 shell），但它只待在菜单里等你手动选——
+宿主对「没选过 shell 的会话」默认开第一个发现到的本地 shell，于是远程会话点开
+终端还是本机 cmd。
+
+0.8.75 起，插件在**没有人占位**时把这个启动器登记为终端的默认 shell
+（`config.shell`，宿主发现列表的第一位 + 无 shellPath 创建的默认解析目标）：
+
+- 远程会话：点「打开终端」直接 ssh 进远端、落在工作目录，不用再从菜单里挑；
+- 本地会话：同一个启动器透明回落本地 shell（cwd 不在镜像里时它就是干这个的）；
+- **永远不越界**：宿主管理员配置了 `config.shell`、或你在 shell 菜单里手动选过
+  任何一个 shell，你的选择都优先；插件卸载/停用时归还默认位（别人后来占了的
+  不会去抢）；配置 `remoteTerminalDefault: false` 可完全退回纯菜单模式。
+
+新增 4 例单测（认领/尊重既有默认/开关关闭/卸载不抢别人）。issue #55 的文件链接
+一半早已修复，本条补上终端一半。
+
+## 0.8.74 — 2026-11-07
+### 修复：「添加工作区」弹窗在已有会话里点不动（issue #93）+ dsh-tui 适配层合入（PR #92）
+
+**#93 — 弹窗渲染正常、点击全部穿透到下方聊天文本（@Twens03 报告并定位）**
+目录选择弹窗的浮层是普通 React 节点插进 slot 子树、靠 `position:fixed` 自己盖屏；
+DSH 0.2.2 的对话区容器会困住它的指针事件——于是新会话（hero 页没有这层容器）
+一切正常、已有会话里点哪儿都没反应。宿主的 Modal/Menu 之所以没事，是因为它们
+`createPortal` 到 `document.body`。现在浮层同样 portal 到 body（react-dom 在宿主
+共享模块表里就有）；宿主较老没有 react-dom 时回退原来的内联浮层，不丢功能。
+插件里右键菜单早就是这个写法，这次补齐最后一个漏网的浮层。新增 2 例渲染级测试
+（有 react-dom 时必须 portal 到 body、没有时内联回退不崩）。
+
+**PR #92 — dsh-tui 适配层（@baiseraku）**
+终端里也能用同一份机器清单与工作区：`/dsh-remote` 全屏设置页（增删改/连接/探测/
+浏览远端目录/设为工作区）、`/workspace` 选择器里的 `dshremote://` 远程项目
+provider、机器菜单 `m` 进工作区清理页（彻底删除/只删对话/移出最近列表三级；
+有会话占用时拒绝删除）。全部通过 dsh-tui 的官方插件接缝注册，dsh-tui 本体零修改；
+Web/Desktop profile 下静默降级、不注册任何东西。详见 docs/tui.md。
+维护者在评审中收窄了一处副作用：打开 `/workspace` 选择器（list）不再把每台机器
+的最近工作区登记进全局工作区台账，真正选中打开时才登记。
+
+## 0.8.73 — 2026-11-06
+### 修复：DSH NEXT 2.x 上「remote ssh」终端连得上却打不了字（issue #91）
+
+**根因（@d2461795341 报告并定位）**
+DSH NEXT 2.x 把内置 node 挪到了带架构段的目录
+（`resources/runtime/x64/primary-runtime/dependencies/node/bin/node.exe`），
+而启动器只认旧的无架构段路径，于是找不到真 node 时回退到「拿 Electron 冒充
+node」（`ELECTRON_RUN_AS_NODE`）：远端 pty 照常分配，所以输出、颜色、提示符全
+正常；但 stdin 继承到的不是 ConPTY 控制台，按键全部丢失——终端看起来活着，
+实质是聋的。
+
+**修复（三层）**
+- 候选路径按新布局解析：先试本机架构目录、再试旧布局、再扫描 `runtime/` 下任意
+  架构目录（架构段改了名也能命中），Windows 上不再落到 Electron 回退；
+- 就算真落进回退，启动器现在**先**打印提示再执行（此前提示写在 `exit /b` 之后，
+  正好是走回退时永远执行不到的死代码）；
+- 终端子进程拉起 ssh 前检查 stdin 是否真控制台（`isTTY` / `fstat(0)` 字符设备），
+  不是就直接打出中英双语报错并以 126 退出，不再开一个只能看不能用的终端。
+
+验证：新增 5 例单测（arch 布局命中、候选优先级、改名架构段兜底、提示先于回退
+执行、聋终端拒绝）；POSIX 启动器纳入真实 `sh -n` 语法闸门；全套 890 例通过，
+check.mjs 干净。临时绕过：把 `DSH_REMOTE_TERMINAL_NODE` 指向任意真实 `node.exe`
+后重启。
+
 ## 0.8.72 — 2026-11-03
 ### 远程文件面板自动打开可永久关闭（issue #78）+ 连接报错现在一定带机器名 + zod 安全修复
 

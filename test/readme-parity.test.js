@@ -77,6 +77,7 @@ test('each section is paired by position, not merely equal in count', () => {
     ['安装', 'Install'],
     ['快速上手', 'Quick start'],
     ['在本地打开远程机器上的 DSH 界面', 'Open a remote machine\'s DSH Web UI locally'],
+    ['在 TUI（dsh-tui）里使用', 'Use it from the TUI (dsh-tui)'],
     ['可选：CLI 默认机', 'CLI defaults (optional)'],
     ['常用命令（安装 / 查看 / 启动）', 'CLI quick reference'],
     ['开发（沙箱优先，勿改产品）', 'Development (sandbox, not product)'],
@@ -84,7 +85,7 @@ test('each section is paired by position, not merely equal in count', () => {
     ['常见问题 / 排查', 'FAQ / troubleshooting'],
     ['安全提醒', 'Safety'],
     ['License', 'License'],
-    ['参与贡献', 'Contributing'],
+    ['参与贡献与致谢', 'Contributing & credits'],
     ['变更记录', 'Changelog'],
   ]
   const a = h2(zh).map((s) => s.replace(/^##\s+/, ''))

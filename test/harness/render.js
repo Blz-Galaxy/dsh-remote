@@ -27,6 +27,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { fakeTimers } from './fake-timers.js'
+import { installTestDispatcher } from './react-dispatcher.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const CLIENT_SRC = readFileSync(path.join(here, '..', '..', 'lib', 'client.js'), 'utf8')
@@ -94,10 +95,41 @@ export function mountClient(opts = {}) {
       // The real package ships MarkdownText (used for remote .md rendering, issue
       // #74); the stub renders text inside a marker element so tests can tell a
       // rendered doc from a raw source wall.
-      return {
+      //
+      // The stub is a `React.memo` wrapper ON PURPOSE: that is exactly what the
+      // host exports (typeof 'object', $$typeof Symbol(react.memo)). A plain
+      // function stub made the suite blind to a `typeof === 'function'` guard that
+      // dropped the memo object and degraded every remote .md to its raw source
+      // (issue #101) — keep the shape faithful, or the regression goes unnoticed.
+      // `strictMarkdownText` makes the stub behave like the REAL host renderer,
+      // which dereferences `labels.code.*` / `labels.footnotes` without a guard
+      // while rendering a fenced code block or a footnote. A pane that forgets
+      // `labels` therefore throws here exactly as it does in the browser.
+      const MarkdownText = React.memo(opts.strictMarkdownText
+        ? (props) => {
+            const code = props.labels.code
+            void code.copyLabel
+            void code.copiedLabel
+            void code.toolbarLabels.codeLabel
+            void props.labels.footnotes
+            return React.createElement('div', { className: 'md-stub' }, props.text)
+          }
+        : (props) => React.createElement('div', { className: 'md-stub' }, props.text))
+      const stub = {
         relativeTime: () => ({ unit: 'now', n: 0 }),
-        MarkdownText: (props) => React.createElement('div', { className: 'md-stub' }, props.text),
+        MarkdownText,
       }
+      // Optional host code-highlighter face (issue #104): faithful to the
+      // bundle contract — useCodeHighlighter(lang) returns highlight(text) →
+      // per-line [{text, style:{color}}], or a fn yielding null for unknown
+      // grammars. Every token gets one recognizable color for assertions.
+      if (opts.withCodeHighlighter) {
+        stub.languageForPath = (p) => (/\.(c|js|py)$/i.test(String(p || '')) ? 'mocklang' : undefined)
+        stub.useCodeHighlighter = (lang) => (code) => (lang
+          ? String(code).split('\n').map((line) => [{ text: line, style: { color: 'rgb(9,9,9)' } }])
+          : null)
+      }
+      return stub
     }
     throw new Error('unexpected require: ' + id)
   }
@@ -136,7 +168,7 @@ export function mountClient(opts = {}) {
           get: (kind) => tabTypes.get(kind),
         }
       }
-      if (name === 'sessions') return { list: { getSnapshot: () => ({ byId: {} }) } }
+      if (name === 'sessions') return (opts.services || {}).sessions || { list: { getSnapshot: () => ({ byId: {} }) } }
       return (opts.services || {})[name]
     },
     effect(fn) { const d = fn(); return typeof d === 'function' ? d : () => {} },
@@ -150,6 +182,7 @@ export function mountClient(opts = {}) {
   const refs = new Map()
   const cleanups = []
   const seen = new Set()
+  const effectStates = new Map()
   let cursor = 0
   let pending = []
 
@@ -159,9 +192,23 @@ export function mountClient(opts = {}) {
       if (!(i in state)) state[i] = typeof init === 'function' ? init() : init
       return [state[i], (v) => { state[i] = typeof v === 'function' ? v(state[i]) : v }]
     },
-    useEffect(fn) {
+    useEffect(fn, deps) {
       const i = cursor++
-      if (!seen.has('e' + i)) { seen.add('e' + i); pending.push(fn) }
+      if (!opts.effectDependencies) {
+        if (!seen.has('e' + i)) { seen.add('e' + i); pending.push(fn) }
+        return
+      }
+      // Navigation regressions need React's dependency-change semantics, not
+      // the default mount-only driver used by the older interaction tests.
+      const previous = effectStates.get(i)
+      if (previous && deps && previous.deps && deps.length === previous.deps.length
+        && deps.every((dep, index) => Object.is(dep, previous.deps[index]))) return
+      pending.push(() => {
+        previous?.cleanup?.()
+        const entry = { deps, cleanup: fn() }
+        effectStates.set(i, entry)
+        return () => { entry.cleanup?.(); entry.cleanup = undefined }
+      })
     },
     useRef(v) {
       const i = cursor++
@@ -178,7 +225,7 @@ export function mountClient(opts = {}) {
     useDeferredValue(v) { cursor++; return v },
     useImperativeHandle() {},
   }
-  React.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentDispatcher.current = dispatcher
+  installTestDispatcher(React, dispatcher)
 
   /** Render a component (mounting the hook-free slot wrapper first) and run its effects. */
   async function settleFor(Comp, props = {}) {
@@ -232,7 +279,11 @@ export function mountClient(opts = {}) {
      * link body found the settings page's machines array where its own
      * `remotePath` should be, and rendered the file tab with a non-string path.
      */
-    resetState() { state.length = 0; refs.clear(); seen.clear() },
+    resetState() {
+      state.length = 0; refs.clear(); seen.clear()
+      for (const entry of effectStates.values()) { entry.cleanup?.(); entry.cleanup = undefined }
+      effectStates.clear()
+    },
     tick,
     elements,
     textOf,

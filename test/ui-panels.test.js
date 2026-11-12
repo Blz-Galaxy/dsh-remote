@@ -90,12 +90,50 @@ test('a remote .md link renders through the host MarkdownText, not a raw source 
       sessionId: 's-1',
       useTabInfo: () => ({ tab: { navigation: { address: 'dsh-resource://dsh-remote/file/' + encodeURIComponent('/srv/app/README.md') } } }),
     })
-    // Nested function components are NOT executed by the tree walker, so the
-    // MarkdownText stub appears as an element whose TYPE is the stub and whose
-    // props carry the markdown text.
+    // Nested components are NOT executed by the tree walker, so the MarkdownText
+    // stub appears as an element whose TYPE is the stub and whose props carry the
+    // markdown text. The stub is a memo wrapper (the host's real shape), so this
+    // test also pins the component-type detection: a bare `typeof === 'function'`
+    // guard drops the memo object and the viewer falls back to the raw-source wall
+    // (issue #101).
     const mdEls = ui.elements(tree).filter((el) => el.props && el.props.text === md)
     assert.ok(mdEls.length > 0, `expected the MarkdownText branch to render, got: ${ui.text(tree).slice(0, 200)}`)
+    assert.equal(mdEls[0].type && mdEls[0].type.$$typeof, Symbol.for('react.memo'), 'the memo-wrapped host MarkdownText must be rendered as-is')
     assert.match(ui.text(tree), /README\.md/)
+  } finally { ui.dispose() }
+})
+
+test('a remote .md with a code fence satisfies the host MarkdownText label contract', async () => {
+  // The host MarkdownText reads its code-block / footnote chrome straight off
+  // `labels` (`labels.code.copyLabel`, `labels.footnotes`, …) and does NOT guard
+  // those reads. A pane that passes only `text` therefore throws inside the host
+  // renderer while drawing the first fenced block, and the error boundary around
+  // the pane swallows it: the file opens and the body stays EMPTY ("read failed"
+  // is gone, nothing renders). `strictMarkdownText` makes the harness stub do the
+  // same dereferences, so this test fails if the labels ever go missing again.
+  const md = '# Title\n\n```yaml\nkey: value\n```\n'
+  const ui = mountClient({
+    strictMarkdownText: true,
+    fetch: stubFetch({
+      overrides: {
+        '/dsh-remote/read': () => ({ content: md, mtime: 1, size: md.length }),
+      },
+    }).fetch,
+  })
+  try {
+    const body = ui.body('dsh-remote/file')
+    const tree = await ui.settleComponent(body, {
+      sessionId: 's-1',
+      useTabInfo: () => ({ tab: { navigation: { address: 'dsh-resource://dsh-remote/file/' + encodeURIComponent('/srv/app/README.md') } } }),
+    })
+    const mdEls = ui.elements(tree).filter((el) => el.props && el.props.text === md)
+    assert.ok(mdEls.length > 0, `expected the rendered markdown branch, got: ${ui.text(tree).slice(0, 200)}`)
+    const labels = mdEls[0].props.labels
+    assert.ok(labels, 'the host renderer requires a labels bundle')
+    assert.ok(labels.code.copyLabel && labels.code.copiedLabel, 'code-block labels must be resolved')
+    assert.ok(labels.code.toolbarLabels.codeLabel, 'the code-block toolbar label must be present')
+    assert.ok(labels.footnotes, 'the footnote label must be present')
+    assert.doesNotMatch(labels.code.copyLabel, /^file\./, 'labels must be translated, not raw i18n keys')
   } finally { ui.dispose() }
 })
 

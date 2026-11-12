@@ -394,5 +394,93 @@
     "npmLastWeek": 33243,
     "stars": 247,
     "forks": 44
+  },
+  {
+    "day": "2026-11-05",
+    "at": "2026-11-05T19:55:01.608Z",
+    "dau": null,
+    "wau": null,
+    "mau": null,
+    "installs": null,
+    "npmLastWeek": 32057,
+    "stars": 254,
+    "forks": 45
+  },
+  {
+    "day": "2026-11-06",
+    "at": "2026-11-06T19:22:02.601Z",
+    "dau": null,
+    "wau": null,
+    "mau": null,
+    "installs": null,
+    "npmLastWeek": 31053,
+    "stars": 258,
+    "forks": 45
+  },
+  {
+    "day": "2026-11-07",
+    "at": "2026-11-07T21:47:50.806Z",
+    "dau": null,
+    "wau": null,
+    "mau": null,
+    "installs": null,
+    "npmLastWeek": 31381,
+    "stars": 264,
+    "forks": 45
+  },
+  {
+    "day": "2026-11-08",
+    "at": "2026-11-08T22:01:25.890Z",
+    "dau": null,
+    "wau": null,
+    "mau": null,
+    "installs": null,
+    "npmLastWeek": 34883,
+    "stars": 267,
+    "forks": 46
+  },
+  {
+    "day": "2026-11-09",
+    "at": "2026-11-09T22:18:56.840Z",
+    "dau": null,
+    "wau": null,
+    "mau": null,
+    "installs": null,
+    "npmLastWeek": 44965,
+    "stars": 272,
+    "forks": 46
+  },
+  {
+    "day": "2026-11-10",
+    "at": "2026-11-10T19:42:08.865Z",
+    "dau": 402,
+    "wau": 1276,
+    "mau": 1276,
+    "installs": 1276,
+    "npmLastWeek": 53628,
+    "stars": 275,
+    "forks": 48
+  },
+  {
+    "day": "2026-11-11",
+    "at": "2026-11-11T14:19:33.369Z",
+    "dau": 1425,
+    "wau": 1769,
+    "mau": 1769,
+    "installs": 1769,
+    "npmLastWeek": 59991,
+    "stars": 277,
+    "forks": 48
+  },
+  {
+    "day": "2026-11-12",
+    "at": "2026-11-12T00:40:03.325Z",
+    "dau": 251,
+    "wau": 1883,
+    "mau": 1883,
+    "installs": 1883,
+    "npmLastWeek": 59991,
+    "stars": 278,
+    "forks": 48
   }
 ]

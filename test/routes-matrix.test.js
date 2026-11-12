@@ -50,6 +50,12 @@ const ROUTES = [
   { path: '/dsh-remote/update-apply', allow: ['POST'], body: true },
   { path: '/dsh-remote/update-reload', allow: ['POST'] },
   { path: '/dsh-remote/update-mode', allow: ['POST'], body: true },
+  { path: '/dsh-remote/explorer-auto-open', allow: ['GET', 'POST'], body: true },
+  { path: '/dsh-remote/telemetry', allow: ['GET', 'POST'], body: true },
+  { path: '/dsh-remote/term-secret', allow: ['POST'], body: true },
+  // workspace cleanup (web/desktop face of the TUI cleanup page, issue #96)
+  { path: '/dsh-remote/workspace-mirrors', allow: ['GET'] },
+  { path: '/dsh-remote/workspace-cleanup', allow: ['POST'], body: true },
   // fs surface (lib/routes-fs.js)
   { path: '/dsh-remote/ls', allow: ['GET', 'POST'], noMethodGuard: true },
   { path: '/dsh-remote/read', allow: ['GET', 'POST'], body: true },
