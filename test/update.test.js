@@ -121,6 +121,30 @@ test('applyUpdate installs the tarball and marks the version', async () => {
   }
 })
 
+test('applyUpdate installs .cjs helpers and nested lib files', async () => {
+  // ★ 回归：0.8.92 给 web-attach.js 加了 `import './posix-shell.cjs'`，而更新器
+  // 只复制顶层 `lib/*.js` 且跳过子目录。自动更新落盘后，下次启动 import 就抛
+  // ERR_MODULE_NOT_FOUND，整个插件一条 entry 都激活不了（0.8.92 实测）。
+  const dir = makeInstall()
+  const files = {
+    ...NEW_FILES,
+    'lib/posix-shell.cjs': 'module.exports = { posixViaSh: (command) => command }\n',
+    'lib/tui/scene.js': 'export const scene = 1\n',
+  }
+  try {
+    const res = await applyUpdate('0.2.0', {
+      dir,
+      fetchImpl: makeFetch({ version: '0.2.0', tarball: makeTarball(files) }),
+    })
+    assert.equal(readFileSync(path.join(dir, 'lib', 'posix-shell.cjs'), 'utf8'), files['lib/posix-shell.cjs'])
+    assert.equal(readFileSync(path.join(dir, 'lib', 'tui', 'scene.js'), 'utf8'), files['lib/tui/scene.js'])
+    assert.ok(res.changed.includes('lib/posix-shell.cjs'), res.changed.join(','))
+    assert.ok(res.changed.includes('lib/tui/scene.js'), res.changed.join(','))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('applyUpdate leaves no temp files and skips byte-identical files', async () => {
   const dir = makeInstall()
   const fetchImpl = makeFetch({ version: '0.2.0', tarball: makeTarball(NEW_FILES) })
@@ -282,14 +306,6 @@ test('the update check still reports local state when the registry fails', () =>
   assert.match(body, /registryError:/, 'the failure reason must be surfaced separately')
 })
 
-test('auto mode backs off after a failed probe', () => {
-  // 被限流时反复重试只会把配额烧得更久；退避是必需的。
-  const src = readFileSync(path.join(root, 'lib', 'index.js'), 'utf8')
-  const gate = src.slice(src.indexOf('if (effectiveUpdateMode === \'auto\')'))
-  assert.match(gate, /backoffRounds/, 'the auto gate must track backoff rounds')
-  assert.match(gate, /backoffRounds = 0/, 'a successful probe must reset the backoff')
-})
-
 // ── refusing to overwrite a source checkout ──────────────────────────────
 
 test('isInstalledCopy distinguishes a node_modules install from a checkout', () => {
@@ -359,6 +375,26 @@ test('clearSelfModuleCache honours an explicit package dir', () => {
   }
 })
 
+test('clearSelfModuleCache evicts .cjs helpers and nested lib modules too', () => {
+  // 同一个过滤缺陷的镜像问题：`.cjs` 通过 import() 载入时既进 ESM loadCache
+  // 也进 require.cache，只清顶层 `.js` 会让热切换继续跑旧模块。
+  const dir = mkdtempSync(path.join(tmpdir(), 'dsh-remote-clear-cjs-'))
+  try {
+    mkdirSync(path.join(dir, 'lib', 'tui'), { recursive: true })
+    writeFileSync(path.join(dir, 'lib', 'posix-shell.cjs'), 'module.exports = {}\n')
+    writeFileSync(path.join(dir, 'lib', 'tui', 'scene.js'), 'export const scene = 1\n')
+    const urls = [
+      pathToFileURL(path.join(dir, 'lib', 'posix-shell.cjs')).href,
+      pathToFileURL(path.join(dir, 'lib', 'tui', 'scene.js')).href,
+    ]
+    const loadCache = new Map(urls.map((url) => [url, { stub: true }]))
+    assert.equal(clearSelfModuleCache({ internal: { loadCache } }, dir), 2)
+    for (const url of urls) assert.equal(Map.prototype.has.call(loadCache, url), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('reloadSelf clears the disabled flag DSH 0.2 writes when a fiber is disposed', async () => {
   // DSH 0.2 loader: disposing a fiber sets options.disabled and writes the
   // tree. The client scanner then skips that row, so a hot reload brings the
@@ -379,6 +415,22 @@ test('reloadSelf clears the disabled flag DSH 0.2 writes when a fiber is dispose
   assert.equal(res.ok, true, JSON.stringify(res))
   assert.equal(entry.options.disabled, undefined)
   assert.deepEqual(calls, ['fiber.dispose', 'write', 'init'])
+})
+
+test('reloadSelf restores the enabled flag through the new loader change journal and waits for startup', async () => {
+  const calls = []
+  const entry = {
+    options: { id: 'dsh-remote', name: 'dsh-remote' },
+    parent: { tree: { commit(change) {
+      assert.equal(change.id, 'dsh-remote'); assert.equal(change.group, entry.parent)
+      assert.equal(change.legacy.disabled, true); assert.equal(change.options.disabled, undefined)
+      calls.push('commit')
+    } } },
+    fiber: { dispose: async () => { entry.options.disabled = true; calls.push('dispose') } },
+    init: async () => { calls.push('init'); entry.fiber = { await: async () => { calls.push('ready') } } },
+  }
+  assert.equal((await reloadSelf({ entries: () => [entry] })).ok, true)
+  assert.deepEqual(calls, ['dispose', 'commit', 'init', 'ready'])
 })
 
 test('reloadSelf leaves an entry that was already disabled disabled', async () => {

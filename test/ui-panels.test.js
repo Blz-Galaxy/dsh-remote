@@ -71,11 +71,11 @@ test('every slot the client registers renders without throwing and leaks no raw 
   } finally { ui.dispose() }
 })
 
-test('a remote .md link renders through the host MarkdownText, not a raw source wall (issue #74)', async () => {
+test('a remote .md opens editable source and explicitly previews through the host MarkdownText (issue #74)', async () => {
   // The built-in Markdown preview reads the LOCAL MIRROR and dies with ENOENT on an
-  // unsynced file. The remote-link editor claims the address now and RENDERS the
-  // remote content with the host's MarkdownText — this test proves the rendered
-  // branch is taken (the harness stub marks it with className "md-stub").
+  // unsynced file. The remote-link editor claims the address, opens source,
+  // and renders fetched remote content through the host MarkdownText when
+  // preview is requested (the harness stub marks it with className "md-stub").
   const md = '# Title\n\n- one\n- two\n'
   const ui = mountClient({
     fetch: stubFetch({
@@ -86,10 +86,17 @@ test('a remote .md link renders through the host MarkdownText, not a raw source 
   })
   try {
     const body = ui.body('dsh-remote/file')
-    const tree = await ui.settleComponent(body, {
+    const fileProps = {
       sessionId: 's-1',
       useTabInfo: () => ({ tab: { navigation: { address: 'dsh-resource://dsh-remote/file/' + encodeURIComponent('/srv/app/README.md') } } }),
-    })
+    }
+    let tree = await ui.settleComponent(body, fileProps)
+    const sourceEditor = ui.components(tree).find(c => c.type.name === 'HighlightedEditor')
+    assert.ok(sourceEditor, 'Markdown source is directly editable on open')
+    assert.equal(sourceEditor.props.value, md)
+    assert.equal(ui.elements(tree).some(el => el.type?.$$typeof === Symbol.for('react.memo') && el.props.text === md), false, 'preview requires an explicit action')
+    ui.button(tree, /^预览$/).el.props.onClick()
+    tree = await ui.settleComponent(body, fileProps)
     // Nested components are NOT executed by the tree walker, so the MarkdownText
     // stub appears as an element whose TYPE is the stub and whose props carry the
     // markdown text. The stub is a memo wrapper (the host's real shape), so this
@@ -100,6 +107,9 @@ test('a remote .md link renders through the host MarkdownText, not a raw source 
     assert.ok(mdEls.length > 0, `expected the MarkdownText branch to render, got: ${ui.text(tree).slice(0, 200)}`)
     assert.equal(mdEls[0].type && mdEls[0].type.$$typeof, Symbol.for('react.memo'), 'the memo-wrapped host MarkdownText must be rendered as-is')
     assert.match(ui.text(tree), /README\.md/)
+    ui.button(tree, /^源码$/).el.props.onClick()
+    tree = await ui.settleComponent(body, fileProps)
+    assert.equal(ui.components(tree).find(c => c.type.name === 'HighlightedEditor').props.value, md, 'leaving preview retains editable source')
   } finally { ui.dispose() }
 })
 
@@ -122,10 +132,13 @@ test('a remote .md with a code fence satisfies the host MarkdownText label contr
   })
   try {
     const body = ui.body('dsh-remote/file')
-    const tree = await ui.settleComponent(body, {
+    const fileProps = {
       sessionId: 's-1',
       useTabInfo: () => ({ tab: { navigation: { address: 'dsh-resource://dsh-remote/file/' + encodeURIComponent('/srv/app/README.md') } } }),
-    })
+    }
+    let tree = await ui.settleComponent(body, fileProps)
+    ui.button(tree, /^预览$/).el.props.onClick()
+    tree = await ui.settleComponent(body, fileProps)
     const mdEls = ui.elements(tree).filter((el) => el.props && el.props.text === md)
     assert.ok(mdEls.length > 0, `expected the rendered markdown branch, got: ${ui.text(tree).slice(0, 200)}`)
     const labels = mdEls[0].props.labels
@@ -158,16 +171,16 @@ test('the machine list shows the badges a user needs to tell machines apart', as
   } finally { ui.dispose() }
 })
 
-test('every saved machine offers 连接 and 选目录 (issue #73: the list IS the primary path)', async () => {
+test('saved hosts expose configuration actions without workspace or global-target controls', async () => {
   const machines = [{ ...MACHINE, id: 'm-1', name: 'first' }, { ...MACHINE, id: 'm-2', name: 'second' }]
   const ui = mountClient({ fetch: stubFetch({ machines, currentId: 'm-1' }).fetch })
   try {
     const tree = await ui.settle()
     const labels = ui.buttons(tree).map((b) => b.label)
-    // Issue #73 replaced 「设为当前」 with 「连接」 (activate + probe in one click) and
-    // added 「选目录」 (the second half of the VSCode-shaped flow).
-    assert.equal(labels.filter((l) => /^连接$/.test(l)).length, 2, `expected a 连接 action per machine, got: ${labels.join(' | ')}`)
-    assert.equal(labels.filter((l) => /^选目录$/.test(l)).length, 2, `expected a 选目录 action per machine, got: ${labels.join(' | ')}`)
+    assert.equal(labels.filter(label => /^编辑$/.test(label)).length, 2)
+    assert.equal(labels.filter(label => /^删除$/.test(label)).length, 2)
+    assert.equal(labels.some(label => /^(连接|打开项目|默认目录|选目录|设为当前|清除默认目标)$/.test(label)), false)
+    assert.equal(ui.elements(tree).filter(element => element.props.className === 'dsh-rw-settings-probe').length, 2)
     // A disabled control must still explain itself.
     const mute = ui.buttons(tree).filter((b) => b.disabled && !b.title)
     assert.deepEqual(mute.map((b) => b.label), [],
@@ -175,7 +188,7 @@ test('every saved machine offers 连接 and 选目录 (issue #73: the list IS th
   } finally { ui.dispose() }
 })
 
-test('the ~/.ssh/config hosts are listed with a one-click 连接, and saved ones are not duplicated', async () => {
+test('SSH config hosts have a connectivity indicator and saved aliases are not duplicated', async () => {
   const machines = [{ ...MACHINE, id: 'm-1', name: 'saved-box', host: 'saved-box', useSshConfig: true }]
   const entries = [
     { host: 'saved-box', alias: 'saved-box', hostName: '10.0.0.7', user: 'root', port: 22 },
@@ -194,9 +207,8 @@ test('the ~/.ssh/config hosts are listed with a one-click 连接, and saved ones
     // second one for the same alias.
     const aliasSpans = ui.elements(tree).filter((el) => el.type === 'span' && ui.textOf(el).trim() === 'saved-box')
     assert.equal(aliasSpans.length, 1, `saved-box must be listed exactly once, got ${aliasSpans.length}`)
-    // Exactly one 连接 for the discovered host, plus one for the saved machine.
-    const connects = ui.buttons(tree).filter((b) => /^连接$/.test(b.label))
-    assert.equal(connects.length, 2, `expected 2 连接 buttons (1 discovered + 1 saved), got ${connects.length}`)
+    const probes = ui.elements(tree).filter(element => element.props.className === 'dsh-rw-settings-probe')
+    assert.equal(probes.length, 2, 'one independent connectivity result per host')
   } finally { ui.dispose() }
 })
 
@@ -205,8 +217,9 @@ test('an empty registry explains itself instead of showing a blank panel', async
   try {
     const tree = await ui.settle()
     const text = ui.text(tree)
-    assert.match(text, /还没有|没有保存|no machines/i, 'an empty machine list must say so')
-    assert.match(text, /当前没有活动远程机/, 'and explain that nothing is active')
+    assert.match(text, /暂无主机|no hosts/i, 'an empty machine list must say so')
+    assert.match(text, /新建远程工作区/, 'directory selection belongs to workspace creation')
+    assert.doesNotMatch(text, /当前远程机|默认目标/)
   } finally { ui.dispose() }
 })
 
@@ -217,11 +230,11 @@ test('there is no add-machine form; editing a saved machine still opens one (iss
     let tree = await ui.settle()
     const before = ui.text(tree)
     assert.doesNotMatch(before, /手动添加|添加机器|填表/, 'the add-machine form the reporter circled is gone')
-    assert.match(before, /打开配置文件/, 'new hosts are added by opening ~/.ssh/config')
+    assert.match(before, /编辑 SSH 配置/, 'new hosts are added by opening ~/.ssh/config')
     assert.doesNotMatch(before, /HostKey 模式/, 'the edit form is not on screen until 编辑')
-    ui.button(tree, /打开配置文件/).el.props.onClick()
+    ui.button(tree, /编辑 SSH 配置/).el.props.onClick()
     await ui.tick()
-    assert.ok(stub.calls.some((c) => c.url.includes('/dsh-remote/ssh-config') && c.body && c.body.action === 'open'),
+    assert.ok(stub.calls.some((c) => c.url.includes('/dsh-remote/ssh-config') && c.body && c.body.action === 'read'),
       '打开配置文件 must ask the host to open the ssh config, not a form')
     tree = await ui.click(tree, /^编辑$/)
     assert.match(ui.text(tree), /主机/, 'editing a saved machine still shows the credential form')
@@ -285,20 +298,24 @@ test('the directory picker renders its path box and refuses to commit an empty p
   } finally { ui.dispose() }
 })
 
-test('the remote file tab opens READ-ONLY and only enables saving after an edit', async () => {
-  const ui = mountClient({
-    fetch: stubFetch({
-      overrides: { '/dsh-remote/read': () => ({ ok: true, binary: false, content: 'line1\nline2\n', truncated: false, size: 12, mtime: 1 }) },
-    }).fetch,
-  })
+test('the remote file tab is immediately editable and only enables saving after a change', async () => {
+  const content = 'line1\nline2\n'
+  const stub = stubFetch({ overrides: { '/dsh-remote/read': () => ({ ok: true, content, truncated: false, size: 12, mtime: 1 }) } })
+  const ui = mountClient({ fetch: stub.fetch })
   try {
-    const Tab = ui.component('conversation.session.header.utilities')
-    let tree = await ui.settleComponent(Tab, { tab: { path: '/home/user/README.md' }, scope: { sessionId: 's-1' } })
-    const save = ui.buttons(tree).find((b) => /保存到远程/.test(b.label))
-    if (save) {
-      assert.equal(save.disabled, true, 'saving must be impossible before an edit (read-only by default)')
-      assert.ok(save.title, 'a disabled save button must explain itself on hover')
-    }
+    const body = ui.body('dsh-remote/file')
+    const fileProps = { sessionId: 's-1', useTabInfo: () => ({ tab: { navigation: { address: 'dsh-resource://dsh-remote/s-1/' + encodeURIComponent('/home/user/main.js') } } }) }
+    let tree = await ui.settleComponent(body, fileProps)
+    const editor = ui.components(tree).find(c => c.type.name === 'HighlightedEditor')
+    assert.ok(editor, 'opening complete text must immediately expose the editor')
+    assert.equal(editor.props.value, content)
+    const save = ui.button(tree, /^保存到远程$/)
+    assert.equal(save.disabled, true, 'unchanged content must not be written')
+    assert.ok(save.title, 'a disabled save button must explain itself on hover')
+    editor.props.onChange({ target: { value: 'changed\n', selectionStart: 8 } })
+    tree = await ui.settleComponent(body, fileProps)
+    assert.equal(ui.button(tree, /^保存到远程$/).disabled, false)
+    assert.equal(stub.calls.some(call => call.url.includes('/write')), false, 'typing alone never writes remotely')
   } finally { ui.dispose() }
 })
 

@@ -68,7 +68,7 @@ weighted line coverage: 80.3%   （全部 33 个 lib 文件加权；870+ 条测�
 `openssh.js` 56%（需要本机 `ssh`，真机夜跑见 nightly.yml）、`binding.js` 66%、
 `hostkey.js` 68%、`forwards.js` 69%、`client.js` 72%、`pool.js` 72%。门禁是双层的：
 `--gate 70` 管加权均值，`--file-gate 60` 管每一个文件的下限（例外在脚本 `FILE_FLOORS`
-里逐条注明原因——当前只剩 openssh.js 一条；例外一旦不再必要会被 stale 检查点名要求删除）。
+里逐条注明原因——当前无例外；若新增例外且之后不再必要，会被 stale 检查点名要求删除）。
 
 `lib/client.js` 是浏览器代码，测试从字符串求值——所有求值点都带
 `sourceURL`/`filename: 'lib/client.js'`，V8 覆盖率因此**能归源**，实测 **71.7% 且逐位稳定**。
@@ -101,7 +101,7 @@ weighted line coverage: 80.3%   （全部 33 个 lib 文件加权；870+ 条测�
 
 三条线，都是踩过事故后加的：
 
-1. **心跳**：`apply()` 里 `void sendHeartbeat(...)`，跑一次 `npm test` 就真的往生产统计灌假机器。
+1. **心跳**：`apply()` 注册的启动及周期心跳，跑一次 `npm test` 就真的往生产统计灌假机器。
 2. **`~/.ssh/config`**：保存机器会 upsert `# dsh-remote: managed` Host 块 —— 测试里「保存一台假机器」
    真的改过开发机的 ssh 配置，留下 `Host 127.0.0.1 / Port 1`、`Host 10.9.9.6..9`，而
    `Host 127.0.0.1` 又**反过来劫持**后续要连 127.0.0.1 的测试。现在整轮测试指向临时文件
@@ -130,13 +130,14 @@ weighted line coverage: 80.3%   （全部 33 个 lib 文件加权；870+ 条测�
 | 文件 | 真机验证了什么 | 需要 |
 |---|---|---|
 | it-openssh-real.test.js | 系统 OpenSSH 后端：真 ssh 连接 + exec + SFTP + 平台探测；**密码走 askpass**、**私钥 -i**、**~/.ssh/config 别名**三种认证；错密码在有限时间内报认证失败；close 后可重连 | IT_SSH_HOST + IT_SSH_PASSWORD 或 IT_SSH_KEY 或 IT_SSH_ALIAS |
-| it-keychain-real.test.js | 当前平台**真的**系统钥匙库：存入/读回/删除、含 shell 元字符的秘密不被破坏、DPAPI 落盘是密文、无钥匙库时 persistPassword 必须 efused 且不落明文 | 无（用当前平台） |
+| it-keychain-real.test.js | 当前平台**真的**系统钥匙库：存入/读回/删除、含 shell 元字符的秘密不被破坏、DPAPI 落盘是密文、无钥匙库时 persistPassword 必须
+efused 且不落明文 | 无（用当前平台） |
 | it-webattach-real.test.js | 真远端 dsh web：隧道打开到 loopback、**token URL 换 cookie（303 + Set-Cookie）**、带 cookie 的 / 返回 HTML、无 token 仍 401、close 释放端口、stopRemote 停掉它启动的远端进程 | IT_WEB_HOST + IT_WEB_PASSWORD/IT_WEB_KEY |
 
 **真机跑出来的两个结论**（假服务器永远测不到）：
 
 1. **Linux 钥匙库后端是完全坏的**：secret-tool store 通过 xecFile({input}) 拿不到 EOF，一直阻塞到 8s 超时被杀，
-   报错还是空的 Command failed: … —— 也就是说「勾选加密保存密码」在 Linux 上**必然失败**。改成 spawn + 显式 stdin.end() 后 
+   报错还是空的 Command failed: … —— 也就是说「勾选加密保存密码」在 Linux 上**必然失败**。改成 spawn + 显式 stdin.end() 后
    同一个真机 20ms 完成、读写回环正常（lib/credential.js）。
 2. **隧道是好的，但测试必须自己做 token 交换**：DSH 的 token URL 是 303 + Set-Cookie，Node 的 fetch 不存 cookie，
    直接 follow 会落到 401 —— 这不是产品 bug，是测试写法。现在测的是真链路（换 cookie → 200 → HTML）。
@@ -165,3 +166,139 @@ weighted line coverage: 80.3%   （全部 33 个 lib 文件加权；870+ 条测�
 
 下一步优先级：GSSAPI 用例在有 Kerberos 的环境跑一遍 → 目录选择器的渲染级点击链。
 
+
+## 7. Agent 远程任务与编译输出验收
+
+工具 handler 测试、人的文件栏操作、真实 Agent 循环和真实模型自主决策是不同层次，不能用其中一层的通过代替其他层。
+
+`test/it-agent-workspace.test.js` 使用真实 DSH 0.2.0-rc.2 的 Cordis、AgentLoop、ToolRuntime、会话日志和 SSH/SFTP 连接。模型决策由 `test/harness/agent-build-model.js` 确定性生成，每一步校验模型收到的上一工具结果；它不调用外部模型。`test/harness/disk-workspace.js` 让 SFTP 和真实 shell 子进程使用同一个临时磁盘目录，GCC 报错、生成的二进制和运行输出都来自实际进程，没有预制编译结果。
+
+前提：Linux/POSIX、Node.js ≥22、GCC，以及独立安装的 DSH 0.2.0-rc.2。默认 CI 没有完整 DSH 宿主时明确跳过：
+
+```sh
+IT_DSH_MODULES=/path/to/dsh-host/node_modules \
+  node --import ./test/setup-telemetry-off.mjs --test --test-timeout=40000 test/it-agent-workspace.test.js
+```
+
+这两项回归检查：
+
+- Agent 收到远程工作区提示和工具声明，读取远端源码，实际编译失败后看到文件/行号、stderr 和非零退出码，修改远程文件，重新编译并运行，最后将结果写入会话记录。
+- 本地镜像中放置不同的哨兵内容；确认它没有被编辑、没有生成二进制，防止“实际在本地执行却宣称远程成功”。
+- 命令已经在远端启动后停止 Agent，确认它没有继续写文件、没有继续请求模型；同一会话的新任务仍能执行。
+
+真实浏览器验收使用 `scripts/manual/agent-web-e2e.mjs`。需在独立宿主的 node_modules 中安装当前 checkout 的 dsh-remote，并另行准备 playwright-core 和 Chromium：
+
+```sh
+IT_DSH_MODULES=/path/to/dsh-host/node_modules \
+IT_BROWSER_MODULES=/path/to/browser-tools/node_modules \
+CHROMIUM_PATH=/usr/bin/chromium \
+IT_AGENT_ARTIFACTS=/tmp/dsh-agent-artifacts \
+  node scripts/manual/agent-web-e2e.mjs
+```
+
+脚本启动独立 DSH_HOME、loopback SSH 服务和 Web 宿主，通过正式 SessionController 创建会话、选择测试模型并提交任务；校验最终回复、展开后的编译诊断和退出码，以及文件侧栏读到的 Agent 修改结果。保存会话事件和截图，退出时清理临时 profile、文件和进程；默认使用本机 50602 端口，可用 `IT_AGENT_PORT` 调整。测试用路由仅在显式 E2E 环境变量和随机 nonce 下启用，不修改正式 profile。
+
+`IT_AGENT_PTC=1` 使用宿主正式 `ptc` preset，要求文件沙箱后端可工作。在嵌套 bubblewrap 的云执行器里，可在获准的外层执行相同测试；DSH 仍使用工作区沙箱，不改成无约束模式。新旧宿主分别使用自身支持的工具执行器 API，不能假设 `tools.presentAs()` 在新版仍存在。
+
+真实模型使用 `IT_AGENT_REAL_MODEL=1`，从环境设置注入 `DEEPSEEK_API_KEY`，默认模型 `deepseek-chat`；可用 `IT_AGENT_MODEL` 选择兼容模型。脚本断言远端真实源码和二进制、最终任务回复、可点击 GCC 诊断与侧栏文件结果；不会把只获得模型回复或 HTTP 200 当作通过。模型有时会在 GCC 后追加 `echo`，此时 shell 的真实退出码可以为 0；卡片保留该退出码，同时突出并自动展开编译错误，不能把 stdout 中的字符串冒充进程事实。
+
+本次真实模型通过记录与脚本原生/PTC 记录分开，范围见 [1.0 发布验收](release/1.0.0.md)。公网主机测试按用户指示停止，没有计入通过。
+
+## 8. 介绍页与配图
+
+```sh
+IT_BROWSER_MODULES=/path/to/browser-tools/node_modules \
+  node scripts/manual/site-e2e.mjs
+```
+
+脚本检查中英文、1440px 与 390px 布局、图片加载、键盘切图、安装命令复制和语言持久化；从真实 HTML 重渲染 `docs/cover.png` 与 `docs/shots/features.png`。工作区配图来自实际 DSH 会话，不能用概念图代替实测截图。默认产物在 `/tmp/dsh-site-artifacts`，可用 `IT_SITE_ARTIFACTS` 调整。
+
+
+## 8. 主机设置与独立工作区
+
+设置页只管理主机、凭据和连接配置。进入页面自动对已保存主机和 SSH 配置条目检测连通性，最多三个并行；离开时取消排队和晚到结果。刷新可重新检测，注册表轮询不重复连接；检测不调用 `/current`、`/mirror` 或打开工作区。显示的毫秒数是 SSH 建连与命令探测总耗时，不是 ICMP ping。目录选择只属于新建远程工作区，各工作区独立绑定主机。
+
+`issue73-connect-flow.test.js` 验证自动检测、隔离、延时、失败、并发上限与取消；`settings-workbench.test.js` 验证草稿、标签切换、保存及晚到编辑探测。真实浏览器验收（独立 DSH_HOME 和回环 SSH，不读取用户配置）：
+
+```sh
+IT_DSH_MODULES=/path/to/host/node_modules \
+IT_BROWSER_MODULES=/path/to/playwright/node_modules \
+CHROMIUM_PATH=/path/to/chromium \
+IT_SETTINGS_ARTIFACTS=/tmp/dsh-settings-artifacts \
+node scripts/manual/settings-web-e2e.mjs
+```
+
+检查主机结果列与编辑表单对齐、远程主机图标、键盘标签导航、菜单关闭、草稿、测试与保存，以及 1440px / 390px 布局。此项接入最新宿主的原生 Agent CI，并上传截图。
+
+
+## 9. 1.0.1 升级与原生入口回归
+
+`client-lifecycle.test.js` 在已有旧样式节点时挂载新客户端，验证原节点被更新且不重复注入；设置浏览器脚本通过 `IT_SETTINGS_LEGACY_CSS=1` 预置旧 CSS，检查页面无需手动刷新即可恢复网格布局。该脚本还实际读写临时 SSH 配置、验证外部编辑冲突和窄屏工具按钮。
+
+`ssh-config-editor.test.js` 验证显式读配置、原文保存、版本冲突、输入限制与符号链接保留；`settings-ssh-editor.test.js` 验证内置编辑器、草稿、快捷键和重新载入确认。
+
+Agent 浏览器验收新增原生“工作区文件”点击：在任务完成后创建只存在于远端、没有本地镜像副本的文件，通过原生入口列出并打开它。客户端路由测试还验证两个远程会话、本地会话、异步到达和插件卸载隔离。CI 覆盖 DSH 0.2.0、0.2.1-rc.5、0.2.2 三条宿主的 native/PTC 路径。
+
+- `test/auto-update.test.js` 和 `test/update-routes.test.js` 验证运行中启停、并发去重、失败退避、落盘未切换、卸载保护与无 registry 请求的状态轮询。`scripts/manual/auto-update-web-e2e.mjs` 在隔离的真实 DSH 进程中开启自动模式，用实际候选 tgz 完成下载和 Loader 热切换，整个过程不请求手动更新。Agent CI 的三个宿主原生路径均执行此验收。
+
+
+## 10. 日常开发与 IDE 布局
+
+下列脚本默认验证 `IT_DSH_MODULES` 中实际安装的候选包，使用独立临时 profile 和 loopback SSH，不读写用户项目。`IT_BROWSER_MODULES` 指向 Playwright，`CHROMIUM_PATH` 指向 Chromium；各脚本退出时回收其宿主及 SSH 服务。
+
+| 脚本 | 验收内容 | 截图目录变量 |
+| --- | --- | --- |
+| `scripts/manual/directory-picker-web-e2e.mjs` | 桌面、低高度、手机的列表可见行数、键盘选择和路径确认 | `IT_PICKER_ARTIFACTS` |
+| `scripts/manual/search-web-e2e.mjs` | 未展开目录内的文件/目录、实际扫描进度、内容行跳转、停止、空结果、手机布局 | `IT_SEARCH_ARTIFACTS` |
+| `scripts/manual/git-web-e2e.mjs` | 真实远端仓库、工作区与暂存区差异、行号打开真实远端文件 | `IT_GIT_ARTIFACTS` |
+| `scripts/manual/ide-web-e2e.mjs` | 三栏位置、原生节点与未保存草稿保留、运行中 GCC 任务、列宽、窄屏和多会话隔离 | `IT_IDE_ARTIFACTS` |
+| `scripts/manual/terminal-web-e2e.mjs` | 原生终端、像素鱼、真实 OpenSSH/PTY 输入输出及仅远端落盘 | `IT_TERMINAL_ARTIFACTS` |
+
+开发源码覆盖模式需显式设置相应 `IT_SEARCH_SOURCE=1`、`IT_GIT_SOURCE=1`、`IT_IDE_SOURCE=1` 或 `IT_TERMINAL_SOURCE=1`；正式候选验收不设置这些开关。不能将源码测试作为发布包已通过的证据。
+
+`workspace-search.test.js` 覆盖任务归属、边界、增量结果、取消与真实 SFTP 操作并发；`workspace-search-ui.test.js` 覆盖迟到响应和范围、会话切换隔离。取消不释放尚未结束的真实操作槽位，不关闭共享连接。
+
+`file-save-integrity.test.js`、`remote-write.test.js`、`editor-save-lifecycle.test.js` 验证同秒同大小外部修改、CRLF、符号链接/权限、写失败、保存期间继续输入与恢复原文。`file-change-tools.test.js` 和 Agent 集成测试核对实际应用差异元数据，模型可见结果仍保持简洁。
+
+`IT_AGENT_APPLIED_DIFF=1` 的 Agent 浏览器验收完整执行 7 步：读取 → 实际编译失败 → 拒绝不匹配编辑 → 成功编辑 → 编译 → 运行 → 汇报。DSH 0.2.0-rc.2 的工具运行器仅对顶层调用生成 `presentationMeta`，且不将其写入 `tool/ptc-dispatch`；这同时影响 PTC 的编辑和命令展示元数据。脚本按实际安装的 `@deepseek-ai/dsh-tools` 版本，仅对 **0.2.0-rc.2 + PTC** 验证真实执行结果、请求的前后替换片段、失败状态、没有虚假“已应用”标记以及模型消息不含 diff 元数据，并明确打印宿主限制；不跳过任务、不修补宿主、不把展示信息塞入模型输出。0.2.0 原生调用及已验收的 0.2.1-rc.5 / 0.2.2-rc.1 原生和 PTC 调用仍严格要求持久化的真实 diff、上下文和增删行数。没有元数据的记录只能回退为替换片段，不能据此推断完整已应用差异。
+
+`ide-mode.test.js` 验证列宽夹持、偏好持久化、可选宿主服务以及停靠后原始属性、inert 与 CSS 变量的完整恢复。IDE 通过兼容适配原生宿主面板，不复制会话 React 树；未来宿主标记变化可能需要更新适配。
+
+jsdiff 的最小源码集合保留原 BSD-3-Clause 许可；`node scripts/vendor-diff.mjs` 可从锁定的开发依赖重建，CI 比较结果。覆盖率门禁统计第一方代码，第三方源码不计入；整体与逐文件阈值保持不变。
+
+## IDE 欢迎与可编辑代码
+
+`ide-web-e2e.mjs` 检查无打开文件的初次进入、关闭最后一个文件后恢复欢迎页，以及 280/360/400px 会话栏的默认精简头部和“会话工具”展开态。几何与命中检查在同一浏览器帧中读取，验证标题、按钮、视图栏和第一条正文没有覆盖；运行中的 SSH/GCC 任务与原编辑节点、草稿继续保留。
+
+`scripts/manual/highlighted-editor-web-e2e.mjs` 从选定候选包中读取实际编辑组件，使用真实宿主 React、Shiki 与主题服务验证 C/JS/中文高亮、浅深色主题、字体/滚动/软换行行号对齐、选区、缩进、撤销重做、Chromium IME、诊断定位与大文件回退。默认测 `IT_DSH_MODULES` 中的安装包；源码验证需显式 `IT_EDITOR_SOURCE=1`，产物目录使用 `IT_EDITOR_ARTIFACTS`。不替换宿主文件或伪造 token。
+
+保留的原生文件页在重新显示时重查远端，后台不持续读取。未保存内容、revision/mtime 冲突、CRLF 和保存期间继续输入由 `editor-save-lifecycle.test.js`、`remote-draft-recovery.test.js` 验证；二进制、图片与截断预览不能被文本编辑器覆盖。
+
+### Agent 生成文件与本地副本恢复
+
+会话回复中的文件链接按会话绑定读取远端文件；不会静默将本地镜像内容当成远端文件。远端明确返回不存在且安全同名本地副本可用时，界面提供只读预览，再显式上传并打开。恢复上传要求本地版本一致，使用独占创建，远端已有同名文件时拒绝覆盖；权限错误、失效会话、越界和符号链接不进入此流程。
+
+普通文件修改工具在远程会话中提示改用 `rw_write_file`、`rw_edit` 或 `rw_exec`。原始 shell/Python/Node 文件 IO 仍可能生成本地文件，不能宣称工具检查能透明重定向所有操作。Agent 应在远端写入或显式上传、核验后提供远端文件链接。
+
+`local-copy-recovery-ui.test.js` 检查显式来源、只读预览、上传冲突、草稿保留以及切会话/路径和刷新时的迟到请求，防止旧副本遮盖新读取的远端内容。
+
+`scripts/manual/agent-local-write-web-e2e.mjs` 验证真实 Agent 的完整纠正链路：确定性测试模型先调用普通 `write`，消费实际工具门禁的拒绝结果，再以相对路径调用 `rw_write_file` 保存 HTML，最后通过真实会话中的文件链接打开远端结果。模型决策固定；DSH Agent/ToolRuntime、native 或 PTC 执行器、loopback SSH/SFTP、磁盘文件和 Chromium 点击均真实运行。脚本还放置同名旧镜像副本，确认文件链接读取远端结果。默认读取 `IT_DSH_MODULES` 中实际安装的候选包；`IT_BROWSER_MODULES` 指向 Playwright，`IT_AGENT_ARTIFACTS` 指定事件和截图目录，`IT_AGENT_PORT` 可覆盖默认 50688 端口。设置 `IT_AGENT_PTC=1` 使用正式 PTC preset，保持宿主的 workspace-write 沙箱，要求其沙箱后端可运行；`IT_AGENT_SOURCE=1` 仅用于明确标记的临时源码覆盖验收。此脚本只使用测试模型，拒绝 `IT_AGENT_REAL_MODEL=1`。CI 在 0.2.1-rc.5 / 0.2.2-rc.1 的 native 与 PTC 组合中分别执行。
+
+
+## 本地与远程共享工作区验收
+
+- `test/local-workspace.test.js`：实际本地文件、CRLF、保存冲突、跨项目隔离、符号链接、根目录保护、搜索任务归属、真实 Git 和原生工具放行。
+- `test/local-workspace-client.test.js`：本地标签、显式访问上下文、高亮编辑、保存和本地 Shell 选择。
+- 实际浏览器验收（隔离 DSH 配置，不使用用户配置或模型 Key）：
+
+```bash
+IT_DSH_MODULES=/path/to/isolated/node_modules \
+IT_LOCAL_ARTIFACTS=/tmp/local-workspace-evidence \
+node scripts/manual/local-workspace-web-e2e.mjs
+```
+
+该脚本使用脚本化模型决策，Agent、宿主原生 `write/edit/bash`、GCC、文件系统和本地 PTY 均真实执行；验证编译失败、修复、成功运行、生成文件链接、CRLF 保存、搜索和会话切换。证据包含截图、Agent 事件与 `verification.json`。不把脚本化模型称为真实模型验收。`ide-web-e2e.mjs` 同时回归两个 SSH 项目与本地项目切换。
+
+CI 的 0.2.1 / 0.2.2 native 流程设置 `IT_LOCAL_SOURCE=0`，对实际打包安装的候选包运行同一套本地浏览器验收；默认模式复制当前开发源码到隔离环境。
+
+当前实测浏览器环境为 Linux；Windows 使用原生路径与 Git argv 调用，不要求 Git Bash，但仍应在 Windows 宿主上补充实机验收。

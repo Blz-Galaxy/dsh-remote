@@ -176,7 +176,11 @@ const DEFAULT_TREE = {
  * @param {string} [opts.platform] - 'posix' (default) or 'windows' (cmd/ver answers).
  * @param {object} [opts.fs] - initial tree `{ '/path': 'content' }`.
  * @param {string} [opts.cwd] - default working directory for relative paths.
- * @param {Function} [opts.onExec] - `(cmd, { username }) => { stdout?, stderr?, code? }`.
+ * @param {Function} [opts.onExec] - `(cmd, { username }) => { stdout?, stderr?, code?, delayMs? }`.
+ *   `delayMs` postpones the response so callers can exercise real client-side
+ *   exec deadlines (the issue #125 discover timeout needs this).
+ * @param {Function} [opts.onPtyExec] - optional `(command, stream, session) => boolean`; true owns the channel for a real interactive test shell.
+ * @param {object} [opts.filesystem] - optional FakeFs-compatible disposable disk filesystem.
  * @param {boolean} [opts.silent] - do not print protocol errors to the console.
  */
 export async function startFakeSsh(opts = {}) {
@@ -184,7 +188,7 @@ export async function startFakeSsh(opts = {}) {
     users = {}, rejectAll = false, platform = 'posix', fs = DEFAULT_TREE,
     cwd = '/home/user', onExec = null,
   } = opts
-  const tree = new FakeFs(fs)
+  const tree = opts.filesystem || new FakeFs(fs)
   tree._mkdirp(cwd)
   const execLog = []
   const connections = []
@@ -287,11 +291,22 @@ export async function startFakeSsh(opts = {}) {
         session.on('env', (acceptEnv) => { try { acceptEnv() } catch { /* optional */ } })
         session.on('exec', (acceptExec, rejectExec, info) => {
           const stream = acceptExec()
+          if (opts.onPtyExec && opts.onPtyExec(info.command, stream, session)) return
           const res = answerExec(info.command)
-          if (res.stdout) stream.write(res.stdout)
-          if (res.stderr) stream.stderr.write(res.stderr)
-          stream.exit(res.code || 0)
-          stream.end()
+          const respond = () => {
+            // A client-side deadline may close the channel before a delayed
+            // answer arrives; that is the expected race, not a server crash.
+            try {
+              if (res.stdout) stream.write(res.stdout)
+              if (res.stderr) stream.stderr.write(res.stderr)
+              stream.exit(res.code || 0)
+              stream.end()
+            } catch { /* channel already closed by the caller's deadline */ }
+          }
+          // A delayed answer exercises the REAL pool timeout path. Do not unref
+          // the timer: the test must wait for the delayed server-side write too.
+          if (Number(res.delayMs) > 0) setTimeout(respond, Number(res.delayMs))
+          else respond()
         })
         // PTY shells: echo whatever arrives, answer `exit` by closing the channel.
         session.on('pty', (acceptPty) => { try { acceptPty() } catch { /* optional */ } })
@@ -329,7 +344,9 @@ export async function startFakeSsh(opts = {}) {
     server.listen(0, '127.0.0.1', resolve)
   })
   const port = server.address().port
-  server.on('connection', (socket) => {
+  // ssh2.Server emits an SSH Client here, not a net.Socket. Track the actual
+  // TCP listener so teardown also destroys pre-handshake and half-open sockets.
+  server._srv.on('connection', (socket) => {
     sockets.add(socket)
     socket.on('close', () => sockets.delete(socket))
   })
@@ -384,6 +401,7 @@ function serveSftp(sftp, tree, cwd) {
     const mode = flagsToString(flags) || ''
     const wantsWrite = /[wa+]/.test(mode) || (flags & OPEN_MODE.WRITE) || (flags & OPEN_MODE.CREAT)
     const existing = tree.get(target)
+    if (existing && (flags & OPEN_MODE.EXCL)) return fail(reqid, STATUS_CODE.FAILURE)
     if (!existing) {
       if (!wantsWrite) return noSuch(reqid)
       tree.write(target, '')

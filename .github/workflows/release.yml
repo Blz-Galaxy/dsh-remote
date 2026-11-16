@@ -20,7 +20,41 @@ permissions:
   id-token: write # npm --provenance (sigstore attestation)
 
 jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
+      - name: Verify candidate on the supported platform
+        shell: bash
+        run: |
+          for f in lib/*.js lib/*.cjs; do node --check "$f"; done
+          node check.mjs
+          npm test
+          mkdir -p "$RUNNER_TEMP/candidate"
+          node scripts/prepare-npm-readme.mjs
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/candidate"
+          node scripts/verify-release-package.mjs "$RUNNER_TEMP"/candidate/*.tgz
+      - name: Coverage gate
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+        run: npm run test:coverage:gate
+
+  agent-acceptance:
+    uses: ./.github/workflows/agent-acceptance.yml
+    permissions:
+      contents: read
+
   publish:
+    needs: [verify, agent-acceptance]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -35,11 +69,21 @@ jobs:
       # run against exactly the tree that gets packed — a feature, not a risk.
       - run: npm ci --legacy-peer-deps --no-audit --no-fund --ignore-scripts
 
-      - name: Gates (same three as PUBLISH.md)
+      - name: Gates (same four as PUBLISH.md)
         run: |
           for f in lib/*.js; do node --check "$f"; done
           node check.mjs
           npm test
+          mkdir -p "$RUNNER_TEMP/candidate"
+          node scripts/prepare-npm-readme.mjs
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/candidate"
+          node scripts/verify-release-package.mjs "$RUNNER_TEMP"/candidate/*.tgz
+          # Prove the PREVIOUS release's updater can lay this candidate down
+          # completely (the #126 half-updated-tree class). Needs network: it
+          # installs the npm `latest` release into a scratch dir and drives
+          # ITS updater. Runs before publish, while latest still names the
+          # version users would update FROM.
+          node scripts/verify-self-update.mjs --tarball "$RUNNER_TEMP"/candidate/*.tgz
 
       - name: Tag must match package.json version
         run: |
@@ -50,6 +94,10 @@ jobs:
             exit 1
           fi
 
+      - name: Select stable or prerelease channel
+        id: channel
+        run: node scripts/release-channel.mjs "${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       # Idempotent by design: a tag pushed after a MANUAL publish (or a re-run
       # of this workflow) must not go red on "version already exists". Uses the
       # public registry over curl: setup-node's generated .npmrc references
@@ -59,7 +107,7 @@ jobs:
         id: pub
         run: |
           VER="${GITHUB_REF_NAME#v}"
-          CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/dsh-remote/${VER}")
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/dsh-remote/${VER}?release=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
           if [ "$CODE" = 200 ]; then
             echo "already=true" >> "$GITHUB_OUTPUT"
             echo "dsh-remote@${VER} is already on npm — the publish step will skip"
@@ -81,7 +129,7 @@ jobs:
 
       - name: Publish to npm (with provenance)
         if: steps.pub.outputs.already != 'true'
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance --tag "${{ steps.channel.outputs.npmTag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -92,8 +140,23 @@ jobs:
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             echo "release ${GITHUB_REF_NAME} already exists — leaving it untouched"
           else
-            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file notes.md
+            FLAGS=()
+            if [ "${{ steps.channel.outputs.prerelease }}" = true ]; then FLAGS+=(--prerelease); fi
+            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file notes.md "${FLAGS[@]}"
           fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload the verified installation archive and checksum
+        run: |
+          ARCHIVE="$RUNNER_TEMP/candidate/dsh-remote-${GITHUB_REF_NAME#v}.tgz"
+          (cd "$(dirname "$ARCHIVE")" && sha256sum "$(basename "$ARCHIVE")" > "$(basename "$ARCHIVE").sha256")
+          EXISTING=$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name')
+          for FILE in "$ARCHIVE" "$ARCHIVE.sha256"; do
+            if ! echo "$EXISTING" | grep -Fxq "$(basename "$FILE")"; then
+              gh release upload "${GITHUB_REF_NAME}" "$FILE"
+            fi
+          done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -106,13 +169,13 @@ jobs:
           NPM_CONFIG_USERCONFIG: /dev/null
         run: |
           export VER="${GITHUB_REF_NAME#v}"
-          for i in $(seq 1 12); do
-            CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/dsh-remote/-/dsh-remote-${VER}.tgz")
+          for i in $(seq 1 60); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/dsh-remote/-/dsh-remote-${VER}.tgz?release=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$i")
             [ "$CODE" = 200 ] && break
-            echo "tarball not on CDN yet (HTTP $CODE), waiting 10s ($i/12)"
+            echo "tarball not on CDN yet (HTTP $CODE), waiting 10s ($i/60)"
             sleep 10
           done
-          [ "$CODE" = 200 ] || { echo "tarball still 404 after 2min"; exit 1; }
+          [ "$CODE" = 200 ] || { echo "tarball unavailable after 10min"; exit 1; }
           TMP=$(mktemp -d) && cd "$TMP"
           npm init -y >/dev/null
           npm install "dsh-remote@${VER}" --prefer-online

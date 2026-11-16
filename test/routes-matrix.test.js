@@ -21,6 +21,7 @@ import { createHost } from './harness/plugin-host.js'
 /** Every route the plugin is expected to register, with the methods it serves. */
 const ROUTES = [
   { path: '/dsh-remote/status', allow: ['GET'] },
+  { path: '/dsh-remote/workspace-context', allow: ['GET'] },
   { path: '/dsh-remote/resolve-mirror', allow: ['GET'] },
   { path: '/dsh-remote/bindings', allow: ['GET'] },
   { path: '/dsh-remote/connect', allow: ['POST'], body: true },
@@ -56,11 +57,15 @@ const ROUTES = [
   // workspace cleanup (web/desktop face of the TUI cleanup page, issue #96)
   { path: '/dsh-remote/workspace-mirrors', allow: ['GET'] },
   { path: '/dsh-remote/workspace-cleanup', allow: ['POST'], body: true },
+  { path: '/dsh-remote/git', allow: ['GET'] },
+  { path: '/dsh-remote/search', allow: ['GET', 'POST'], body: true },
   // fs surface (lib/routes-fs.js)
   { path: '/dsh-remote/ls', allow: ['GET', 'POST'], noMethodGuard: true },
   { path: '/dsh-remote/read', allow: ['GET', 'POST'], body: true },
   { path: '/dsh-remote/write', allow: ['POST'], body: true },
   { path: '/dsh-remote/fs', allow: ['POST'], body: true },
+  { path: '/dsh-remote/local-copy/read', allow: ['POST'], body: true },
+  { path: '/dsh-remote/local-copy/publish', allow: ['POST'], body: true },
   // embedded terminal (lib/routes-term.js)
   { path: '/dsh-remote/term/open', allow: ['POST'], body: true },
   { path: '/dsh-remote/term/input', allow: ['POST'], body: true },

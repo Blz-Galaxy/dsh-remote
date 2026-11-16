@@ -38,15 +38,13 @@ const fileGate = fileGateIndex >= 0 ? Number(args[fileGateIndex + 1]) : null
 // Per-file floors BELOW the global --file-gate, each with the reason it exists.
 // An exception is a deliberate, visible act — and the stale check at the bottom
 // tells you to delete it the day the file rises above the global gate.
-const FILE_FLOORS = new Map([
-  ['lib/openssh.js', 55], // drives the LOCAL ssh binary; its real proof is it-openssh-real against a live host, which CI does not have
-])
+const FILE_FLOORS = new Map()
 
 // (There used to be a WEIGHTED_EXCLUDE keeping client.js out of the weighted
 // average: at ~50% it would have anchored the host-side signal. The
 // verdict-level merge fixed the undercount — client.js now measures 71.7%
 // deterministically, above the global floor, so the weighted metric is one
-// honest number over ALL of lib/.)
+// honest number over first-party lib/ code; third-party vendor code is excluded.)
 
 const covDir = mkdtempSync(path.join(tmpdir(), 'dsh-remote-cov-'))
 const started = Date.now()
@@ -98,6 +96,9 @@ for (const name of readdirSync(covDir)) {
     } else continue
     if (!/[\\/]lib[\\/]/.test(file)) continue
     if (/[\\/]node_modules[\\/]/.test(file)) continue
+    // Audited third-party sources, pinned and reproduced by vendor-diff.mjs.
+    // All first-party files retain the same global and per-file gates.
+    if (/[\\/]lib[\\/]vendor[\\/]/.test(file)) continue
     if (!sources.has(file)) sources.set(file, { instances: [], functions: new Map() })
     const entry = sources.get(file)
     const instance = new Map() // "start:end" → covered?
