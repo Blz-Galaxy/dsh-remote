@@ -1,14 +1,10 @@
 {
-  "generatedAt": "2026-11-15T18:49:21.500Z",
+  "generatedAt": "2026-11-17T07:51:57.331Z",
   "heartbeat": {
     "ok": true,
-    "generatedAt": "2026-11-15T18:49:21.234Z",
+    "generatedAt": "2026-11-17T07:51:57.037Z",
     "tz": "Asia/Shanghai",
     "daily": [
-      {
-        "day": "2026-10-18",
-        "dau": 0
-      },
       {
         "day": "2026-10-19",
         "dau": 0
@@ -123,40 +119,44 @@
       },
       {
         "day": "2026-11-16",
-        "dau": 327
-      }
-    ],
-    "wau": 3367,
-    "mau": 3367,
-    "installs": 3367,
-    "byVersion": [
-      {
-        "version": "0.8.91",
-        "n": 1766
+        "dau": 1791
       },
       {
-        "version": "0.8.94",
-        "n": 896
+        "day": "2026-11-17",
+        "dau": 1620
+      }
+    ],
+    "wau": 4012,
+    "mau": 4174,
+    "installs": 4174,
+    "byVersion": [
+      {
+        "version": "1.2.0",
+        "n": 1810
+      },
+      {
+        "version": "0.8.91",
+        "n": 1792
       },
       {
         "version": "1.1.2",
-        "n": 882
+        "n": 1102
+      },
+      {
+        "version": "0.8.94",
+        "n": 1001
       },
       {
         "version": "0.8.85",
-        "n": 635
+        "n": 638
       },
       {
         "version": "1.1.1",
-        "n": 389
+        "n": 416
       },
       {
         "version": "0.8.90",
-        "n": 353
-      },
-      {
-        "version": "1.2.0",
-        "n": 174
+        "n": 357
       },
       {
         "version": "0.8.88",
@@ -168,7 +168,7 @@
       },
       {
         "version": "1.0.1",
-        "n": 129
+        "n": 136
       },
       {
         "version": "0.8.84",
@@ -182,23 +182,23 @@
     "byPlatform": [
       {
         "platform": "win32",
-        "n": 2050
+        "n": 2589
       },
       {
         "platform": "darwin",
-        "n": 752
+        "n": 918
       },
       {
         "platform": "linux",
-        "n": 551
+        "n": 649
       },
       {
         "platform": "android",
-        "n": 7
+        "n": 10
       },
       {
         "platform": "ios",
-        "n": 6
+        "n": 7
       },
       {
         "platform": "openharmony",
@@ -209,15 +209,11 @@
   "heartbeatError": null,
   "npm": {
     "package": "dsh-remote",
-    "checkedAt": "2026-11-15T18:49:21.258Z",
+    "checkedAt": "2026-11-17T07:51:57.077Z",
     "latest": "1.2.0",
-    "lastWeek": 79516,
-    "lastMonth": 157507,
+    "lastWeek": 76796,
+    "lastMonth": 164617,
     "daily": [
-      {
-        "day": "2026-10-16",
-        "downloads": 1894
-      },
       {
         "day": "2026-10-17",
         "downloads": 840
@@ -333,6 +329,10 @@
       {
         "day": "2026-11-14",
         "downloads": 11715
+      },
+      {
+        "day": "2026-11-15",
+        "downloads": 9004
       }
     ],
     "zeroDays": [
@@ -342,9 +342,9 @@
     "note": "npm daily counts have reporting gaps; zero-value days are flagged and are not real zero usage."
   },
   "repo": {
-    "stars": 290,
-    "forks": 50,
-    "openIssues": 1,
-    "pushedAt": "2026-11-15T18:26:18Z"
+    "stars": 303,
+    "forks": 53,
+    "openIssues": 3,
+    "pushedAt": "2026-11-17T04:47:28Z"
   }
 }
